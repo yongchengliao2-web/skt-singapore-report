@@ -2,6 +2,9 @@
 data/raw/
 output/
 site/
+cloudflare_pages/
+publish_logs/
+.wrangler/
 __pycache__/
 pipelines/__pycache__/
 *.pyc

@@ -31,10 +31,16 @@ Local refresh only:
 powershell -ExecutionPolicy Bypass -File scripts\update_report.ps1
 ```
 
-Refresh and publish to GitHub Pages:
+Refresh and publish to Cloudflare Pages:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\publish_report.ps1
+```
+
+Direct Cloudflare entry:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\publish_cloudflare.ps1
 ```
 
 ## Core Field Decision
