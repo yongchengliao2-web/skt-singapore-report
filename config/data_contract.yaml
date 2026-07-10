@@ -1,0 +1,126 @@
+brand:
+  name: SKT
+  market: Singapore
+  currency:
+    platform_sp_local: SGD
+    platform_tt_normalized: RMB
+    default_sgd_to_rmb: 5.35
+
+source_tabs:
+  sp_platform_gmv:
+    sheet: SP店铺实收GMV
+    date_field: 日期date
+    order_count_field: Order Count
+    status_field: Order Status
+    store_field: 店铺
+    gmv_local_field: GMV(Customer Payment)
+    alternate_gmv_field: GMV(After Seller Discounts)
+    normalized_field: sp_gmv_rmb
+    rule: Convert GMV(Customer Payment) from SGD to RMB with the exchange rate in 品类表.
+
+  tt_platform_gmv:
+    sheet: TT-销售GMV
+    date_field: Order Date
+    order_count_field: Order Count
+    gmv_local_field: GMV(After seller discounts)
+    gmv_rmb_field: GMV(After seller discounts) RMB
+    platform_discount_rmb_field: Platform discount RMB
+    normalized_field: tt_gmv_rmb
+    rule: Use the RMB GMV field directly.
+
+  offsite_media:
+    sheet: 站外数据源
+    date_field: Date_start
+    spend_field: Spend
+    exchange_rate_field: 汇率
+    normalized_spend_field: offsite_spend_rmb
+    impression_field: Impressions
+    click_field: link-Click
+    conversion_field: Conversions
+    purchase_value_field: Purchase Value
+    normalized_purchase_value_field: offsite_purchase_value_rmb
+    add_to_cart_field: Add_to_cart
+    product_field: 产品
+    ad_format_field: 广告类型
+    funnel_type_field: 类型
+    audience_type_field: 拉新/再营销
+    rule: Spend and Purchase Value are source-currency values. Use column C / Spend for offsite spend and multiply Spend and Purchase Value by row-level 汇率 before RMB ROAS or media-spend analysis. If the Google CSV export is incomplete, use the most complete dated positive-Spend local fallback and fill missing 汇率 from the latest exported offsite 汇率.
+
+  onsite_ads:
+    sheet: 站内广告
+    date_field: 日期date
+    spend_rmb_field: 广告花费-RMB
+    gmv_rmb_field: 广告GMV-RMB
+    ad_name_field: Ad Name
+    ad_type_field: Ads Type
+    impression_field: Impression
+    click_field: Clicks
+    conversion_field: Conversions
+    item_sold_field: Items Sold
+
+  onsite_products:
+    sheet: 站内产品数据-skt
+    date_field: 日期date
+    category_field: 品类
+    item_id_field: Item ID
+    sku_field: SKU
+    product_short_field: 链接
+    product_title_field: Product
+    gmv_sgd_field: Sales (Placed Order) (SGD)
+    exchange_rate_field: 汇率
+    normalized_paid_sales_field: product_paid_sales_rmb
+    paid_units_field: Units (Paid Order)
+    visitor_field: Product Visitors (Visit)
+    page_view_field: Product Page Views
+    add_to_cart_visitor_field: Product Visitors (Add to Cart)
+    product_click_field: Product Clicks
+    product_impression_field: Product Impression
+    rule: Use column L / Sales (Placed Order) (SGD) as onsite product GMV and multiply by the row-level 汇率 column to calculate RMB GMV; keep traffic, add-to-cart and units as native counts.
+
+  category_reference:
+    sheet: 品类表
+    exchange_rate_field: 汇率
+    shop_name_field: Shop Name
+    store_field: 店铺
+    item_id_field: Item ID
+    item_name_field: 单品
+    item_category_field: 品类
+    sku_field: SKU
+    sku_product_name_field: 产品名
+    sku_category_field: 品类
+    rule: Use 品类表 as the source of truth for SKU/Item/category mapping and SP SGD-to-RMB exchange rate.
+    mapping_priority:
+      - Exact Item ID match.
+      - Exact SKU match.
+      - Exact item/product name match.
+      - Contains/name keyword fallback from 品类表 labels.
+      - Unmapped onsite ads fall back to 泛店铺/无产品; other rows fall back to 未归类.
+
+  platform_unit_supplements:
+    sp_sheet: SP-销量
+    tt_sheet: TT-销量
+    date_field: 日期
+    sku_field: SKU编码
+    product_field: 产品
+    category_field: 品类
+    units_field: 销量
+    prior_units_field: 上月同期销售
+    rule: Use as product/category unit supplement only; do not use these sheets as platform GMV.
+
+derived_metrics:
+  - platform_gmv_rmb = sp_gmv_rmb + tt_gmv_rmb
+  - onsite_roas = onsite_ad_gmv_rmb / onsite_ad_spend_rmb
+  - offsite_roas = offsite_purchase_value_rmb / offsite_spend_rmb
+  - media_spend_rmb = onsite_ad_spend_rmb + offsite_spend_rmb
+  - media_sales_rmb = onsite_ad_gmv_rmb + offsite_purchase_value_rmb
+  - media_roas = media_sales_rmb / media_spend_rmb
+  - onsite_spend_ratio = onsite_ad_spend_rmb / platform_gmv_rmb
+  - offsite_spend_ratio = offsite_spend_rmb / platform_gmv_rmb
+  - media_spend_ratio = media_spend_rmb / platform_gmv_rmb
+  - sp_share = sp_gmv_rmb / platform_gmv_rmb
+  - tt_share = tt_gmv_rmb / platform_gmv_rmb
+  - category_sales_share = product_paid_sales_rmb_by_category / total_product_paid_sales_rmb
+  - category_unit_growth = (sp_units + tt_units - prior_sp_units - prior_tt_units) / (prior_sp_units + prior_tt_units)
+  - add_to_cart_rate = product_add_to_cart_visitors / product_visitors
+  - unit_conversion_rate = product_paid_units / product_visitors
+  - sales_per_visitor = product_paid_sales_rmb / product_visitors

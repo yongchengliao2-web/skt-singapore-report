@@ -1,0 +1,9 @@
+*.csv
+data/raw/
+output/
+site/
+__pycache__/
+pipelines/__pycache__/
+*.pyc
+*.part
+.DS_Store

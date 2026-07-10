@@ -1,0 +1,14 @@
+default_source:
+  source_name: SKT_Singapore_live_google_sheet
+  source_type: google_sheet
+  access_mode: online_live_source_with_local_csv_cache
+  spreadsheet_url: https://docs.google.com/spreadsheets/d/1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk/edit?usp=sharing
+  spreadsheet_id: 1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk
+  source_role: fixed_project_source_of_truth
+
+retrieval_rules:
+  - Use Google Sheets gviz CSV export per worksheet.
+  - Cache downloaded CSV files under data/raw/.
+  - If live download fails, use local CSV files in the workspace root when present.
+  - Do not replace platform GMV with onsite product or onsite ad GMV.
+
