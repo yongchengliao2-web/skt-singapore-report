@@ -3901,6 +3901,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     const REFRESH_STORAGE_KEY = 'sktMainReportRefreshRequest';
     const REFRESH_POLL_INTERVAL_MS = 5000;
+    const REFRESH_API_MAX_ATTEMPTS = 3;
+    const REFRESH_API_TIMEOUT_MS = 30000;
+    const ONLINE_REPORT_URL = 'https://skt-singapore-report.pages.dev/';
     let refreshPollTimer = null;
     let refreshPollFailures = 0;
 
@@ -3931,13 +3934,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       } catch (error) {}
     }
 
+    function waitForRefreshRetry(delayMs) {
+      return new Promise(resolve => window.setTimeout(resolve, delayMs));
+    }
+
     async function refreshApi(path, options = {}) {
-      const response = await fetch(path, {
-        cache: 'no-store',
-        credentials: 'same-origin',
-        headers: { Accept: 'application/json', ...(options.headers || {}) },
-        ...options,
-      });
+      let response = null;
+      for (let attempt = 1; attempt <= REFRESH_API_MAX_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), REFRESH_API_TIMEOUT_MS);
+        try {
+          response = await fetch(path, {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            ...options,
+            headers: { Accept: 'application/json', ...(options.headers || {}) },
+            signal: controller.signal,
+          });
+          break;
+        } catch (error) {
+          if (attempt >= REFRESH_API_MAX_ATTEMPTS) {
+            const message = navigator.onLine === false
+              ? '当前网络不可用，请恢复网络后重试'
+              : '连接刷新服务失败，已自动重试，请稍后再点一次';
+            throw new Error(message);
+          }
+          await waitForRefreshRetry(attempt * 1000);
+        } finally {
+          window.clearTimeout(timeout);
+        }
+      }
+      if (!response) throw new Error('连接刷新服务失败');
       const contentType = response.headers.get('content-type') || '';
       const payload = contentType.includes('application/json') ? await response.json() : {};
       if (!response.ok) {
@@ -3987,6 +4014,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     async function requestReportRefresh() {
       stopRefreshPolling();
+      const isLocalPreview = window.location.protocol === 'file:'
+        || ['localhost', '127.0.0.1'].includes(window.location.hostname);
+      if (isLocalPreview) {
+        setRefreshState('queued', '正在打开线上报表', true);
+        window.location.assign(ONLINE_REPORT_URL);
+        return;
+      }
       setRefreshState('queued', '正在提交刷新任务', true);
       try {
         const result = await refreshApi('/__refresh', { method: 'POST' });
@@ -4063,6 +4097,7 @@ def validate_report_html(html: str) -> None:
         'id="refreshReport"',
         "function setupRefreshControl",
         "'/__refresh'",
+        "REFRESH_API_MAX_ATTEMPTS",
         'id="clicksCompareChart"',
         'id="ctrCompareChart"',
         'id="conversionCompareChart"',

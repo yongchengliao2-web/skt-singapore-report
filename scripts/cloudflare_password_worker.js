@@ -11,6 +11,8 @@ const GITHUB_BRANCH = "main";
 const GITHUB_WORKFLOW = "refresh-main-report.yml";
 const GITHUB_API_ROOT = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPOSITORY}`;
 const RUN_TITLE_PREFIX = "SKT refresh ";
+const REFRESH_LOCK_TTL_SECONDS = 120;
+const REFRESH_STATE_TTL_SECONDS = 600;
 
 function secret(env, name) {
   return String(env?.[name] || "").trim();
@@ -211,17 +213,58 @@ async function listWorkflowRuns(env) {
   return Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
 }
 
-function requestTokenForRun(run) {
-  const title = String(run?.display_title || "");
-  if (title.startsWith(RUN_TITLE_PREFIX)) {
-    const suffix = title.slice(RUN_TITLE_PREFIX.length);
-    if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(suffix)) return suffix;
-  }
-  return `run:${run.id}`;
+function refreshCacheRequest(url, key) {
+  return new Request(`${url.origin}/__refresh-cache/${key}`, { method: "GET" });
 }
 
-function isActiveRun(run) {
-  return run && run.status && run.status !== "completed";
+async function readRefreshCache(url, key) {
+  if (typeof caches === "undefined" || !caches.default) return null;
+  try {
+    const response = await caches.default.match(refreshCacheRequest(url, key));
+    return response ? await response.json() : null;
+  } catch (error) {
+    console.error(`Refresh cache read failed: ${key}`);
+    return null;
+  }
+}
+
+async function writeRefreshCache(url, key, payload, maxAge) {
+  if (typeof caches === "undefined" || !caches.default) return false;
+  try {
+    await caches.default.put(
+      refreshCacheRequest(url, key),
+      new Response(JSON.stringify(payload), {
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": `public, max-age=${maxAge}`,
+        },
+      }),
+    );
+    return true;
+  } catch (error) {
+    console.error(`Refresh cache write failed: ${key}`);
+    return false;
+  }
+}
+
+async function clearRefreshLock(url, requestId) {
+  if (typeof caches === "undefined" || !caches.default) return;
+  const current = await readRefreshCache(url, "active");
+  if (current?.request_id !== requestId) return;
+  try {
+    await caches.default.delete(refreshCacheRequest(url, "active"));
+  } catch (error) {
+    console.error("Refresh cache delete failed: active");
+  }
+}
+
+async function storeRefreshState(url, payload) {
+  return writeRefreshCache(
+    url,
+    `state-${payload.request_id}`,
+    payload,
+    REFRESH_STATE_TTL_SECONDS,
+  );
 }
 
 function publicRunStatus(run, requestId, reused = false) {
@@ -254,23 +297,51 @@ async function dispatchRefresh(env, requestId) {
   });
 }
 
-async function handleRefreshPost(request, env, url) {
+async function handleRefreshPost(request, env, url, context) {
   const origin = request.headers.get("Origin") || "";
   if (origin !== url.origin) return jsonResponse({ message: "请求来源校验失败" }, 403);
 
-  try {
-    const runs = await listWorkflowRuns(env);
-    const active = runs.find(isActiveRun);
-    if (active) {
-      const requestId = requestTokenForRun(active);
-      return jsonResponse(publicRunStatus(active, requestId, true), 202);
-    }
+  const active = await readRefreshCache(url, "active");
+  if (active?.request_id) {
+    return jsonResponse({ ...active, reused: true }, 202);
+  }
 
-    const requestId = crypto.randomUUID();
-    await dispatchRefresh(env, requestId);
-    return jsonResponse(publicRunStatus(null, requestId, false), 202);
+  const requestId = crypto.randomUUID();
+  const queued = publicRunStatus(null, requestId, false);
+  const lockStored = await writeRefreshCache(
+    url,
+    "active",
+    queued,
+    REFRESH_LOCK_TTL_SECONDS,
+  );
+  await storeRefreshState(url, queued);
+
+  const recordDispatchFailure = async error => {
+    const failure = {
+      request_id: requestId,
+      status: "completed",
+      conclusion: "failure",
+      reused: false,
+      message: error?.message || "刷新任务提交失败",
+    };
+    await storeRefreshState(url, failure);
+    await clearRefreshLock(url, requestId);
+    console.error(`Refresh dispatch failed: ${requestId}`);
+    return failure;
+  };
+  const dispatch = dispatchRefresh(env, requestId);
+
+  if (lockStored && context?.waitUntil) {
+    context.waitUntil(dispatch.catch(recordDispatchFailure));
+    return jsonResponse(queued, 202);
+  }
+
+  try {
+    await dispatch;
+    return jsonResponse(queued, 202);
   } catch (error) {
-    return jsonResponse({ message: error?.message || "刷新任务提交失败" }, 502);
+    const failure = await recordDispatchFailure(error);
+    return jsonResponse(failure, 502);
   }
 }
 
@@ -281,6 +352,13 @@ async function handleRefreshStatus(env, url) {
   if (!isRunId && !isRequestId) return jsonResponse({ message: "任务编号无效" }, 400);
 
   try {
+    const cachedState = isRequestId
+      ? await readRefreshCache(url, `state-${requestId}`)
+      : null;
+    if (cachedState?.status === "completed" && cachedState?.conclusion === "failure") {
+      return jsonResponse(cachedState);
+    }
+
     let run = null;
     if (isRunId) {
       run = await githubApi(env, `/actions/runs/${requestId.slice(4)}`);
@@ -288,14 +366,20 @@ async function handleRefreshStatus(env, url) {
       const runs = await listWorkflowRuns(env);
       run = runs.find(item => item.display_title === `${RUN_TITLE_PREFIX}${requestId}`) || null;
     }
-    return jsonResponse(publicRunStatus(run, requestId, isRunId));
+    if (!run && cachedState) return jsonResponse(cachedState);
+    const status = publicRunStatus(run, requestId, isRunId);
+    if (status.status === "completed") {
+      await storeRefreshState(url, status);
+      await clearRefreshLock(url, requestId);
+    }
+    return jsonResponse(status);
   } catch (error) {
     return jsonResponse({ message: error?.message || "刷新状态查询失败" }, 502);
   }
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, context) {
     const url = new URL(request.url);
     const passwordSalt = secret(env, "REPORT_PASSWORD_SALT_HEX");
     const passwordHash = secret(env, "REPORT_PASSWORD_HASH_HEX");
@@ -328,7 +412,7 @@ export default {
     }
 
     if (url.pathname === REFRESH_PATH && request.method === "POST") {
-      return handleRefreshPost(request, env, url);
+      return handleRefreshPost(request, env, url, context);
     }
     if (url.pathname === REFRESH_PATH && request.method === "GET") {
       return handleRefreshStatus(env, url);
