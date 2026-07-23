@@ -1770,6 +1770,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .chart.medium {
       height: 360px;
     }
+    .compare-chart-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .compare-chart-card {
+      min-width: 0;
+      padding: 14px 14px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .compare-chart-title {
+      margin: 0 0 4px;
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.3;
+      font-weight: 900;
+    }
+    .chart.compare-chart {
+      height: 250px;
+    }
     .table-wrap {
       overflow: auto;
       max-height: 560px;
@@ -2183,6 +2206,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       .hero-status-card { justify-content: start; width: 100%; }
       .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .grid-2, .grid-even { grid-template-columns: 1fr; }
+      .compare-chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .analysis-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .action-signal-head { display: block; }
       .action-signal-rule { margin-top: 7px; text-align: left; }
@@ -2209,6 +2233,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       .filter-feedback { align-items: flex-start; flex-direction: column; }
       .refresh-status { text-align: left; }
       .metric-grid { grid-template-columns: 1fr; }
+      .compare-chart-grid { grid-template-columns: 1fr; }
       .analysis-grid { grid-template-columns: 1fr; }
       .action-signal-grid { grid-template-columns: 1fr; }
       .action-signal-group + .action-signal-group {
@@ -2329,6 +2354,41 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
       <div class="panel">
         <div class="chart" id="trendChart"></div>
+      </div>
+    </section>
+
+    <section class="section" id="period-comparison">
+      <div class="section-head">
+        <div>
+          <h2>核心指标 vs 上期</h2>
+          <p class="section-note">实线为当前周期，虚线为对比周期；六张图均随日期、对比周期和品类筛选联动，SP GMV 始终保留全站口径。</p>
+        </div>
+      </div>
+      <div class="compare-chart-grid">
+        <div class="compare-chart-card">
+          <h3 class="compare-chart-title">产品点击 vs 上期</h3>
+          <div class="chart compare-chart" id="clicksCompareChart"></div>
+        </div>
+        <div class="compare-chart-card">
+          <h3 class="compare-chart-title">点击率 vs 上期</h3>
+          <div class="chart compare-chart" id="ctrCompareChart"></div>
+        </div>
+        <div class="compare-chart-card">
+          <h3 class="compare-chart-title">转化率 vs 上期</h3>
+          <div class="chart compare-chart" id="conversionCompareChart"></div>
+        </div>
+        <div class="compare-chart-card">
+          <h3 class="compare-chart-title">SP GMV vs 上期</h3>
+          <div class="chart compare-chart" id="spGmvCompareChart"></div>
+        </div>
+        <div class="compare-chart-card">
+          <h3 class="compare-chart-title">站内花费 vs 上期</h3>
+          <div class="chart compare-chart" id="onsiteSpendCompareChart"></div>
+        </div>
+        <div class="compare-chart-card">
+          <h3 class="compare-chart-title">站外花费 vs 上期</h3>
+          <div class="chart compare-chart" id="offsiteSpendCompareChart"></div>
+        </div>
       </div>
     </section>
 
@@ -2872,9 +2932,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       });
       return byDate;
     }
-    function selectedTrendRows(period) {
-      const baseRows = selectedRows(period);
-      const scopedByDate = aggregateTrendDaily(selectedCategoryDailyRows(period));
+    function selectedTrendRows(period, rangeName = 'current') {
+      const baseRows = rangeName === 'compare' ? previousRows(period) : selectedRows(period);
+      const scopedByDate = aggregateTrendDaily(selectedCategoryDailyRows(period, rangeName));
       return baseRows.map(row => {
         const scoped = scopedByDate.get(row.date) || {};
         const output = { ...row };
@@ -3013,6 +3073,118 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           },
         ],
       }, true);
+    }
+    function renderPeriodComparisonCharts(currentRows, compareRows, period) {
+      const alignedRows = alignPeriodRows(currentRows, compareRows, period);
+      const compareRange = period?.compare?.start && period?.compare?.end
+        ? `${period.compare.start.slice(5)}-${period.compare.end.slice(5)}`
+        : '上期';
+      const dailyRate = (row, numerator, denominator) => {
+        const base = n(row?.[denominator]);
+        return base ? n(row?.[numerator]) / base : null;
+      };
+      const configs = [
+        {
+          id: 'clicksCompareChart',
+          name: '产品点击',
+          value: row => n(row?.product_clicks),
+          formatValue: value => fmt0.format(n(value)),
+          formatAxis: value => compact(value),
+        },
+        {
+          id: 'ctrCompareChart',
+          name: '产品点击率',
+          value: row => dailyRate(row, 'product_clicks', 'product_impressions'),
+          formatValue: ratio,
+          formatAxis: ratio,
+        },
+        {
+          id: 'conversionCompareChart',
+          name: '支付件转化率',
+          value: row => dailyRate(row, 'product_paid_units', 'product_visitors'),
+          formatValue: ratio,
+          formatAxis: ratio,
+        },
+        {
+          id: 'spGmvCompareChart',
+          name: '全站GMV（SP）',
+          value: row => n(row?.sp_gmv_rmb),
+          formatValue: money,
+          formatAxis: compact,
+        },
+        {
+          id: 'onsiteSpendCompareChart',
+          name: '站内花费',
+          value: row => n(row?.onsite_spend_rmb),
+          formatValue: money,
+          formatAxis: compact,
+        },
+        {
+          id: 'offsiteSpendCompareChart',
+          name: '站外花费RMB',
+          value: row => n(row?.offsite_spend_rmb),
+          formatValue: money,
+          formatAxis: compact,
+        },
+      ];
+      configs.forEach(config => {
+        initChart(config.id).setOption({
+          color: ['#2563eb', '#93c5fd'],
+          tooltip: {
+            trigger: 'axis',
+            formatter: params => {
+              const items = Array.isArray(params) ? params : [params];
+              const row = alignedRows[items[0]?.dataIndex || 0] || {};
+              const lines = [row.currentDate || ''];
+              items.forEach((item, index) => {
+                const sourceDate = index === 0 ? row.currentDate : row.compareDate;
+                lines.push(`${item.marker}${item.seriesName}：${config.formatValue(item.value)}${sourceDate ? `（${sourceDate}）` : ''}`);
+              });
+              return lines.join('<br/>');
+            },
+          },
+          legend: { top: 0, left: 'center', itemGap: 14, textStyle: { color: '#667b73', fontSize: 11 } },
+          toolbox: {
+            right: 0,
+            top: 0,
+            feature: { saveAsImage: { title: '下载', pixelRatio: 2, backgroundColor: '#ffffff' } },
+          },
+          grid: { left: 54, right: 18, top: 54, bottom: 34 },
+          xAxis: {
+            type: 'category',
+            data: alignedRows.map(row => row.currentDate.slice(5)),
+            axisLabel: { hideOverlap: true, color: '#667b73' },
+            axisLine: { lineStyle: { color: '#9aa8a2' } },
+            axisTick: { show: false },
+          },
+          yAxis: {
+            type: 'value',
+            axisLabel: { formatter: value => config.formatAxis(value), color: '#667b73' },
+            splitLine: { lineStyle: { color: '#e2e9e6' } },
+          },
+          series: [
+            {
+              name: config.name,
+              type: 'line',
+              smooth: true,
+              symbol: 'circle',
+              symbolSize: 5,
+              lineStyle: { width: 3 },
+              areaStyle: { opacity: 0.08 },
+              data: alignedRows.map(row => config.value(row.current)),
+            },
+            {
+              name: `${config.name}（${compareRange}）`,
+              type: 'line',
+              smooth: true,
+              symbol: 'circle',
+              symbolSize: 5,
+              lineStyle: { width: 2, type: 'dashed' },
+              data: alignedRows.map(row => config.value(row.compare)),
+            },
+          ],
+        }, true);
+      });
     }
     function renderPlatformSplit(rows) {
       initChart('platformSplitChart').setOption({
@@ -3658,8 +3830,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const productRows = selectedProductRows(period);
       const compareProductRows = selectedProductRows(period, 'compare');
       const trendRows = selectedTrendRows(period);
+      const compareTrendRows = selectedTrendRows(period, 'compare');
       renderMetrics(rows, compare);
-      renderTrend(trendRows, compare, period);
+      renderTrend(trendRows, compareTrendRows, period);
+      renderPeriodComparisonCharts(trendRows, compareTrendRows, period);
       renderPlatformSplit(rows);
       renderFunnel(rows);
       renderCategoryChart(categoryRows);
@@ -3889,6 +4063,13 @@ def validate_report_html(html: str) -> None:
         'id="refreshReport"',
         "function setupRefreshControl",
         "'/__refresh'",
+        'id="clicksCompareChart"',
+        'id="ctrCompareChart"',
+        'id="conversionCompareChart"',
+        'id="spGmvCompareChart"',
+        'id="onsiteSpendCompareChart"',
+        'id="offsiteSpendCompareChart"',
+        "function renderPeriodComparisonCharts",
     )
     forbidden_fragments = (
         "<th>Purchase Value RMB</th>",
