@@ -13,10 +13,10 @@ source_tabs:
     order_count_field: Order Count
     status_field: Order Status
     store_field: 店铺
-    gmv_local_field: GMV(Customer Payment)
-    alternate_gmv_field: GMV(After Seller Discounts)
+    gmv_local_field: GMV(After Seller Discounts)
+    source_column: I
     normalized_field: sp_gmv_rmb
-    rule: Convert GMV(Customer Payment) from SGD to RMB with the exchange rate in 品类表.
+    rule: Convert GMV(After Seller Discounts) from SGD to RMB with the exchange rate in 品类表. Do not use GMV(Customer Payment).
 
   tt_platform_gmv:
     sheet: TT-销售GMV

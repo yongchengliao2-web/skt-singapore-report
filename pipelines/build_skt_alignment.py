@@ -544,8 +544,8 @@ def load_sp_gmv(path: Path, daily: dict[str, dict[str, Any]], fx_rate: float) ->
             continue
         store = str(get_value(row, "店铺") or "未识别店铺").strip()
         orders = parse_number(get_value(row, "Order Count"))
-        gmv_sgd = parse_number(get_value(row, "GMV(Customer Payment)"))
         gmv_after_seller = parse_number(get_value(row, "GMV(After Seller Discounts)"))
+        gmv_sgd = gmv_after_seller
         gmv_rmb = gmv_sgd * fx_rate
 
         item = add_daily(daily, day)
@@ -1294,7 +1294,7 @@ def build_payload() -> dict[str, Any]:
                 "module": "平台GMV-SP",
                 "sheet": "SP店铺实收GMV",
                 "date": "日期date",
-                "metric": "GMV(Customer Payment)",
+                "metric": "GMV(After Seller Discounts)（I列）",
                 "normalization": f"SGD x 汇率 {fx_rate:g} -> RMB",
             },
             {
@@ -4105,11 +4105,13 @@ def validate_report_html(html: str) -> None:
         'id="onsiteSpendCompareChart"',
         'id="offsiteSpendCompareChart"',
         "function renderPeriodComparisonCharts",
+        "GMV(After Seller Discounts)（I列）",
     )
     forbidden_fragments = (
         "<th>Purchase Value RMB</th>",
         "<th>平均汇率</th>",
         "<th>归因品类</th><th>SP商品GMV</th>",
+        '"metric": "GMV(Customer Payment)"',
     )
     missing = [fragment for fragment in required_fragments if fragment not in html]
     stale = [fragment for fragment in forbidden_fragments if fragment in html]
