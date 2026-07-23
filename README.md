@@ -31,7 +31,7 @@ Local refresh only:
 powershell -ExecutionPolicy Bypass -File scripts\update_report.ps1
 ```
 
-Refresh and publish to Cloudflare Pages:
+Refresh and publish the complete local bundle to Cloudflare Pages:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\publish_report.ps1
@@ -43,9 +43,29 @@ Direct Cloudflare entry:
 powershell -ExecutionPolicy Bypass -File scripts\publish_cloudflare.ps1
 ```
 
+Material-only refresh and publish, preserving the current live main report:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\publish_material_cloudflare.ps1 -FetchDms
+```
+
+The local material publisher requires a one-time encrypted credential setup for the
+current Windows user:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\set_local_report_session.ps1
+```
+
+## Cloud Refresh
+
+- The report page `刷新数据` button dispatches `.github/workflows/refresh-main-report.yml`.
+- The same workflow refreshes the main Google Sheet report every day at 10:45 Asia/Shanghai.
+- The cloud workflow preserves the current material page and never calls the DMS pipeline.
+- The local material automation runs at 11:15 Asia/Shanghai and preserves the current live main report.
+
 ## Core Field Decision
 
 Platform GMV follows the user's instruction and uses the two platform GMV tabs:
 
-- SP: `SP店铺实收GMV`, field `GMV(Customer Payment)`, converted to RMB with the `品类表` exchange rate.
+- SP: `SP店铺实收GMV`, field `GMV(After Seller Discounts)` (column I), converted to RMB with the `品类表` exchange rate.
 - TT: `TT-销售GMV`, field `GMV(After seller discounts) RMB`.

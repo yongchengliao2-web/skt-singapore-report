@@ -1,0 +1,88 @@
+name: Refresh SKT main report
+run-name: "SKT refresh ${{ github.event_name == 'schedule' && 'daily-10:45' || inputs.request_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Refresh request ID
+        required: false
+        default: manual
+        type: string
+  schedule:
+    - cron: "45 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skt-cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  refresh-main-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SKT_REPORT_SESSION_TOKEN: ${{ secrets.REPORT_SESSION_TOKEN }}
+      PROJECT_NAME: skt-singapore-report
+      LIVE_URL: https://skt-singapore-report.pages.dev/
+
+    steps:
+      - name: Check out report source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Preserve current material page
+        run: >-
+          python scripts/download_protected_assets.py
+          --base-url "$LIVE_URL"
+          --asset "/skt-material-analysis=.preserved/skt-material-analysis.html"
+
+      - name: Build main report from Google Sheet
+        run: python pipelines/build_skt_alignment.py
+
+      - name: Restore material page and validate bundle
+        shell: bash
+        run: |
+          cp .preserved/skt-material-analysis.html site/skt-material-analysis.html
+          test -s site/index.html
+          test -s site/skt-onsite-offsite-alignment.html
+          test -s site/skt-material-analysis.html
+          grep -q 'id="refreshReport"' site/index.html
+          grep -q 'PAGE_DATA' site/skt-material-analysis.html
+
+      - name: Prepare Cloudflare Pages bundle
+        shell: bash
+        run: |
+          rm -rf cloudflare_pages
+          mkdir -p cloudflare_pages
+          cp -a site/. cloudflare_pages/
+          cp scripts/cloudflare_password_worker.js cloudflare_pages/_worker.js
+          printf '/*\n  Cache-Control: no-store\n' > cloudflare_pages/_headers
+
+      - name: Deploy main report to Cloudflare Pages
+        run: >-
+          npx --yes wrangler@4.113.0 pages deploy cloudflare_pages
+          --project-name "$PROJECT_NAME"
+          --branch main
+          --commit-dirty=true
+
+      - name: Verify password gate
+        shell: bash
+        run: |
+          for attempt in $(seq 1 12); do
+            code=$(curl -sS -o /tmp/skt-login.html -w '%{http_code}' "$LIVE_URL")
+            if [ "$code" = "401" ] && grep -q 'action="/__auth"' /tmp/skt-login.html; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Password gate verification failed" >&2
+          exit 1

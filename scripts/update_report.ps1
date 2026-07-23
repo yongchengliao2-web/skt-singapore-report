@@ -1,5 +1,6 @@
 param(
-  [switch]$Open
+  [switch]$Open,
+  [switch]$FetchDms
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,20 @@ try {
     throw "Report build failed with exit code $LASTEXITCODE"
   }
 
+  if ($FetchDms) {
+    Write-Host "Refreshing SKT DMS material cache..."
+    & $Python "pipelines\fetch_skt_dms_materials.py"
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning "DMS refresh failed. Continue with latest local cache and offsite data."
+    }
+  }
+
+  Write-Host "Building SKT material analysis page..."
+  & $Python "pipelines\build_skt_material_analysis.py"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Material analysis build failed with exit code $LASTEXITCODE"
+  }
+
   $IndexPath = Join-Path $ProjectRoot "index.html"
   if (!(Test-Path $IndexPath)) {
     throw "Expected public index was not generated: $IndexPath"
@@ -24,6 +39,7 @@ try {
   Write-Host "Done."
   Write-Host "Public page: $IndexPath"
   Write-Host "Local copy:  $(Join-Path $ProjectRoot 'site\index.html')"
+  Write-Host "Material page: $(Join-Path $ProjectRoot 'site\skt-material-analysis.html')"
 
   if ($Open) {
     Start-Process $IndexPath

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import csv
@@ -21,6 +21,8 @@ SITE_DIR = ROOT / "site"
 SPREADSHEET_ID = "1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk"
 DEFAULT_FX_RATE = 5.35
 DEFAULT_OFFSITE_FX_RATE = 6.9
+ONSITE_PRODUCT_IMPRESSION_INDEX = 13
+ONSITE_PRODUCT_CLICK_INDEX = 14
 
 SOURCES: dict[str, dict[str, Any]] = {
     "sp_gmv": {
@@ -469,6 +471,8 @@ def empty_daily_row(day: str) -> dict[str, Any]:
         "product_visitors": 0.0,
         "product_page_views": 0.0,
         "product_add_to_cart_visitors": 0.0,
+        "product_clicks": 0.0,
+        "product_impressions": 0.0,
     }
 
 
@@ -623,6 +627,7 @@ def load_offsite(
                 "spend_rmb": 0.0,
                 "purchase_value": 0.0,
                 "purchase_value_rmb": 0.0,
+                "impressions": 0.0,
                 "conversions": 0.0,
                 "clicks": 0.0,
                 "add_to_cart": 0.0,
@@ -634,6 +639,7 @@ def load_offsite(
         product_row["spend_rmb"] += spend_rmb
         product_row["purchase_value"] += purchase
         product_row["purchase_value_rmb"] += purchase_rmb
+        product_row["impressions"] += impressions
         product_row["conversions"] += conversions
         product_row["clicks"] += clicks
         product_row["add_to_cart"] += add_to_cart
@@ -650,6 +656,7 @@ def load_offsite(
                 "spend_rmb": 0.0,
                 "purchase_value": 0.0,
                 "purchase_value_rmb": 0.0,
+                "impressions": 0.0,
                 "conversions": 0.0,
                 "clicks": 0.0,
                 "add_to_cart": 0.0,
@@ -661,6 +668,7 @@ def load_offsite(
         product_day_row["spend_rmb"] += spend_rmb
         product_day_row["purchase_value"] += purchase
         product_day_row["purchase_value_rmb"] += purchase_rmb
+        product_day_row["impressions"] += impressions
         product_day_row["conversions"] += conversions
         product_day_row["clicks"] += clicks
         product_day_row["add_to_cart"] += add_to_cart
@@ -834,7 +842,13 @@ def load_onsite_products(
     by_category: dict[str, dict[str, Any]] = {}
     by_product: dict[tuple[str, str], dict[str, Any]] = {}
     by_product_day: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for row in read_csv(path):
+    raw_rows = read_csv_rows(path)
+    if not raw_rows:
+        return [], [], []
+
+    headers = raw_rows[0]
+    for values in raw_rows[1:]:
+        row = dict(zip(headers, values))
         day = parse_date(get_value(row, "日期date"))
         if not day:
             continue
@@ -858,8 +872,12 @@ def load_onsite_products(
         visitors = parse_number(get_value(row, "Product Visitors (Visit)"))
         page_views = parse_number(get_value(row, "Product Page Views"))
         add_to_cart_visitors = parse_number(get_value(row, "Product Visitors (Add to Cart)"))
-        product_clicks = parse_number(get_value(row, "Product Clicks"))
-        product_impressions = parse_number(get_value(row, "Product Impression"))
+        product_clicks = parse_number(
+            values[ONSITE_PRODUCT_CLICK_INDEX] if len(values) > ONSITE_PRODUCT_CLICK_INDEX else ""
+        )
+        product_impressions = parse_number(
+            values[ONSITE_PRODUCT_IMPRESSION_INDEX] if len(values) > ONSITE_PRODUCT_IMPRESSION_INDEX else ""
+        )
 
         item = add_daily(daily, day)
         item["product_paid_sales_sgd"] += paid_sales_sgd
@@ -868,6 +886,8 @@ def load_onsite_products(
         item["product_visitors"] += visitors
         item["product_page_views"] += page_views
         item["product_add_to_cart_visitors"] += add_to_cart_visitors
+        item["product_clicks"] += product_clicks
+        item["product_impressions"] += product_impressions
 
         category_day = add_category_day(category_daily, day, category)
         category_day["product_paid_sales_sgd"] += paid_sales_sgd
@@ -1566,6 +1586,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       gap: 8px;
       align-items: center;
       justify-content: flex-end;
+      flex-wrap: wrap;
     }
     .button {
       min-height: 38px;
@@ -1579,10 +1600,51 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       font-weight: 850;
       cursor: pointer;
     }
+    .button:disabled {
+      cursor: wait;
+      opacity: 0.72;
+    }
     .button.secondary {
       border-color: var(--line);
       background: #fbfdfc;
       color: var(--ink);
+    }
+    .refresh-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-width: 108px;
+    }
+    .refresh-icon {
+      display: inline-block;
+      font-size: 17px;
+      line-height: 1;
+    }
+    .refresh-button.is-loading .refresh-icon {
+      animation: refresh-spin 0.9s linear infinite;
+    }
+    .filter-feedback {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .filter-feedback .section-note {
+      margin: 0;
+    }
+    .refresh-status {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-align: right;
+    }
+    .refresh-status[data-state="success"] { color: #146b52; }
+    .refresh-status[data-state="failure"] { color: #b42318; }
+    @keyframes refresh-spin {
+      to { transform: rotate(360deg); }
     }
     .metric-shell {
       padding: 20px 22px;
@@ -1714,6 +1776,171 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: #fff;
+    }
+    .action-signal-panel {
+      margin-top: 14px;
+      overflow: hidden;
+      border: 1px solid #d7c5a8;
+      border-left: 5px solid #b7791f;
+      border-radius: var(--radius);
+      background: #fffdf8;
+      box-shadow: 0 8px 22px rgba(96, 74, 42, 0.06);
+    }
+    .action-signal-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid #e9dcc8;
+    }
+    .action-signal-heading {
+      min-width: 0;
+    }
+    .action-signal-kicker {
+      display: block;
+      margin-bottom: 4px;
+      color: #8a5b16;
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 900;
+    }
+    .action-signal-heading h3 {
+      margin: 0;
+      color: var(--ink);
+      font-size: 18px;
+      line-height: 1.35;
+      font-weight: 900;
+    }
+    .action-signal-heading p,
+    .action-signal-rule,
+    .action-signal-footnote {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      font-weight: 750;
+    }
+    .action-signal-rule {
+      flex: 0 1 470px;
+      margin: 1px 0 0;
+      text-align: right;
+    }
+    .action-signal-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      min-width: 0;
+    }
+    .action-signal-group {
+      min-width: 0;
+      padding: 14px 18px 16px;
+    }
+    .action-signal-group + .action-signal-group {
+      border-left: 1px solid #e9dcc8;
+    }
+    .action-signal-group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 2px;
+    }
+    .action-signal-group-head strong {
+      font-size: 14px;
+      line-height: 1.3;
+      font-weight: 900;
+    }
+    .action-signal-group.reduce .action-signal-group-head strong,
+    .action-signal-group.reduce .signal-action {
+      color: #a33a2b;
+    }
+    .action-signal-group.scale .action-signal-group-head strong,
+    .action-signal-group.scale .signal-action {
+      color: #0f766e;
+    }
+    .action-signal-count {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+      font-weight: 850;
+    }
+    .action-signal-list {
+      display: grid;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }
+    .action-signal-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid #eee4d4;
+      min-width: 0;
+    }
+    .action-signal-item:last-child {
+      border-bottom: 0;
+    }
+    .action-signal-copy {
+      min-width: 0;
+    }
+    .action-signal-product {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+    .action-signal-product strong {
+      overflow-wrap: anywhere;
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 900;
+    }
+    .action-signal-product span {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      font-weight: 750;
+    }
+    .action-signal-evidence {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 12px;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      font-weight: 750;
+    }
+    .signal-delta {
+      margin-left: 3px;
+      font-weight: 900;
+    }
+    .signal-delta.up { color: #c40000; }
+    .signal-delta.down { color: #008a3d; }
+    .signal-action {
+      min-width: 64px;
+      padding: 6px 8px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      text-align: center;
+      font-size: 12px;
+      line-height: 1.2;
+      font-weight: 900;
+    }
+    .action-signal-empty {
+      padding: 18px 0 14px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      font-weight: 750;
+    }
+    .action-signal-footnote {
+      padding: 0 18px 14px;
+      margin: 0;
     }
     table {
       width: 100%;
@@ -1908,8 +2135,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       line-height: 1.2;
       font-weight: 800;
     }
-    .table-compare.good { color: var(--good); }
-    .table-compare.bad { color: var(--bad); }
+    .table-compare.up { color: #c40000; }
+    .table-compare.down { color: #008a3d; }
     .product-cell {
       min-width: 220px;
       max-width: 360px;
@@ -1923,6 +2150,32 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       color: var(--muted);
       font-weight: 800;
     }
+    .offsite-product-table {
+      width: 100%;
+      min-width: 1100px;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+    .offsite-product-table th,
+    .offsite-product-table td {
+      width: auto;
+      padding-right: 7px;
+      padding-left: 7px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .offsite-product-table th:first-child,
+    .offsite-product-table td:first-child {
+      width: 18%;
+    }
+    .offsite-product-table .product-cell {
+      min-width: 0;
+      max-width: none;
+    }
+    .offsite-product-table th:not(:first-child),
+    .offsite-product-table td:not(:first-child) {
+      text-align: right;
+    }
     @media (max-width: 1180px) {
       .page, .topbar-inner { width: min(100% - 48px, 1580px); }
       .side-nav { display: none; }
@@ -1931,6 +2184,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .grid-2, .grid-even { grid-template-columns: 1fr; }
       .analysis-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .action-signal-head { display: block; }
+      .action-signal-rule { margin-top: 7px; text-align: left; }
       .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .filter-actions { justify-content: flex-start; }
     }
@@ -1951,8 +2206,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       .period-card { grid-template-columns: 1fr; }
       .filter-actions { width: 100%; }
       .filter-actions .button { flex: 1; }
+      .filter-feedback { align-items: flex-start; flex-direction: column; }
+      .refresh-status { text-align: left; }
       .metric-grid { grid-template-columns: 1fr; }
       .analysis-grid { grid-template-columns: 1fr; }
+      .action-signal-grid { grid-template-columns: 1fr; }
+      .action-signal-group + .action-signal-group {
+        border-top: 1px solid #e9dcc8;
+        border-left: 0;
+      }
+      .action-signal-item { align-items: start; }
+      .action-signal-product { display: grid; gap: 2px; }
       .chart { height: 340px; }
       .section-head { display: block; }
     }
@@ -2011,11 +2275,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           </select>
         </div>
         <div class="filter-actions">
-          <button class="button secondary" id="resetFilters">重置</button>
-          <button class="button" id="downloadTrend">下载主图</button>
+          <button class="button secondary" id="resetFilters" type="button">重置</button>
+          <button class="button secondary" id="downloadTrend" type="button">下载主图</button>
+          <button class="button refresh-button" id="refreshReport" type="button">
+            <span class="refresh-icon" aria-hidden="true">↻</span>
+            <span id="refreshButtonLabel">刷新数据</span>
+          </button>
         </div>
       </div>
-      <p class="section-note" id="periodSummary">默认当前周期为本月 1 日到昨天，对比上月同日段。</p>
+      <div class="filter-feedback">
+        <p class="section-note" id="periodSummary">默认当前周期为本月 1 日到昨天，对比上月同日段。</p>
+        <p class="refresh-status" id="refreshStatus" role="status" aria-live="polite" hidden></p>
+      </div>
     </section>
 
     <section class="metric-shell" id="summary">
@@ -2156,10 +2427,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="section-head">
         <div>
           <h2>站外产品投放明细</h2>
-          <p class="section-note">按产品映射到品类，展示 SP 商品GMV、人民币花费、回收、ROAS 与平均汇率；同样支持周期环比。</p>
+          <p class="section-note">按产品汇总展示 SP 商品GMV、GMV占比、人民币花费、站外GMV、ROAS，以及展示、点击、加购、转化；GMV占比为商品GMV占当前筛选下全部商品GMV，同样支持周期环比。</p>
         </div>
       </div>
       <div class="table-wrap" id="offsiteProductTable"></div>
+      <div class="action-signal-panel" id="offsiteActionSignals" aria-live="polite"></div>
     </section>
 
     <section class="section" id="daily-detail">
@@ -2398,13 +2670,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         onsite_spend_rmb: sum(rows, 'onsite_spend_rmb'),
         onsite_ad_gmv_rmb: sum(rows, 'onsite_ad_gmv_rmb'),
         onsite_impressions: sum(rows, 'onsite_impressions'),
-        onsite_clicks: sum(rows, 'onsite_clicks'),
         offsite_impressions: sum(rows, 'offsite_impressions'),
         offsite_clicks: sum(rows, 'offsite_clicks'),
         product_paid_sales_rmb: sum(rows, 'product_paid_sales_rmb'),
         product_visitors: sum(rows, 'product_visitors'),
         product_add_to_cart_visitors: sum(rows, 'product_add_to_cart_visitors'),
         product_paid_units: sum(rows, 'product_paid_units'),
+        product_clicks: sum(rows, 'product_clicks'),
+        product_impressions: sum(rows, 'product_impressions'),
       };
       total.sp_share = total.platform_gmv_rmb ? total.sp_gmv_rmb / total.platform_gmv_rmb : null;
       total.tt_share = total.platform_gmv_rmb ? total.tt_gmv_rmb / total.platform_gmv_rmb : null;
@@ -2416,7 +2689,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       total.media_spend_ratio = total.platform_gmv_rmb ? total.media_spend_rmb / total.platform_gmv_rmb : null;
       total.add_to_cart_rate = total.product_visitors ? total.product_add_to_cart_visitors / total.product_visitors : null;
       total.unit_conversion_rate = total.product_visitors ? total.product_paid_units / total.product_visitors : null;
-      total.onsite_ctr = total.onsite_impressions ? total.onsite_clicks / total.onsite_impressions : null;
+      total.product_ctr = total.product_impressions ? total.product_clicks / total.product_impressions : null;
       total.product_aov = total.product_paid_units ? total.product_paid_sales_rmb / total.product_paid_units : null;
       total.onsite_spend_ratio = total.platform_gmv_rmb ? total.onsite_spend_rmb / total.platform_gmv_rmb : null;
       total.offsite_spend_ratio = total.platform_gmv_rmb ? total.offsite_spend_rmb / total.platform_gmv_rmb : null;
@@ -2457,7 +2730,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       return `<div class="metric-sub">${label} ${formatter(current)} <span class="metric-sub-delta ${metricDeltaClass(current, previous)}">| 环比 ${deltaText(current, previous)}</span></div>`;
     }
     function tableMetricHtml(current, previous, formatter, options = {}) {
-      const compareClass = deltaClass(current, previous, options);
+      const compareClass = metricDeltaClass(current, previous);
       return `<div class="table-primary">${formatter(current)}</div><div class="table-compare ${compareClass}">环比 ${deltaText(current, previous)}</div>`;
     }
     function dateSeries(start, end) {
@@ -2522,12 +2795,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         },
         {
           label: 'CTR',
-          value: ratio(t.onsite_ctr),
-          current: t.onsite_ctr,
-          previous: p.onsite_ctr,
+          value: ratio(t.product_ctr),
+          current: t.product_ctr,
+          previous: p.product_ctr,
           subs: [
             ['转化率', t.unit_conversion_rate, p.unit_conversion_rate, ratio],
-            ['站内点击', t.onsite_clicks, p.onsite_clicks, value => fmt0.format(n(value))],
+            ['产品点击', t.product_clicks, p.product_clicks, value => fmt0.format(n(value))],
           ],
         },
         {
@@ -2883,6 +3156,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             spend_rmb: 0,
             purchase_value: 0,
             purchase_value_rmb: 0,
+            impressions: 0,
             conversions: 0,
             clicks: 0,
             add_to_cart: 0,
@@ -2890,7 +3164,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             fx_weight: 0,
           });
           const target = byProduct.get(key);
-          ['spend', 'spend_rmb', 'purchase_value', 'purchase_value_rmb', 'conversions', 'clicks', 'add_to_cart']
+          ['spend', 'spend_rmb', 'purchase_value', 'purchase_value_rmb', 'impressions', 'conversions', 'clicks', 'add_to_cart']
             .forEach(field => { target[field] += n(row[field]); });
           if (n(row.avg_fx) && n(row.spend)) {
             target.fx_weighted += n(row.avg_fx) * n(row.spend);
@@ -2964,6 +3238,46 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .filter(item => item.score >= 0.45)
         .sort((a, b) => (b.score - a.score) || (b.gmv - a.gmv))[0];
       return overlap ? overlap.gmv : 0;
+    }
+    function offsiteProductKey(row) {
+      return `${row?.category || '-'}||${row?.product || '-'}`;
+    }
+    function relativeChange(current, previous) {
+      const base = n(previous);
+      if (base <= 0) return null;
+      return (n(current) - base) / Math.abs(base);
+    }
+    function signalChangeText(change) {
+      if (change === null || change === undefined || !Number.isFinite(Number(change))) return '无有效基期';
+      const value = Number(change) * 100;
+      return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+    }
+    function buildOffsiteActionRows(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows) {
+      const currentByProduct = new Map((offsiteProductRows || []).map(row => [offsiteProductKey(row), row]));
+      const compareByProduct = new Map((compareOffsiteProductRows || []).map(row => [offsiteProductKey(row), row]));
+      const productKeys = new Set([...currentByProduct.keys(), ...compareByProduct.keys()]);
+      const currentSpGmvLookup = buildProductGmvLookup(productRows);
+      const compareSpGmvLookup = buildProductGmvLookup(compareProductRows);
+      return [...productKeys].map(key => {
+        const current = currentByProduct.get(key) || {};
+        const previous = compareByProduct.get(key) || {};
+        const identity = currentByProduct.get(key) || compareByProduct.get(key) || {};
+        const currentSpend = n(current.spend_rmb);
+        const previousSpend = n(previous.spend_rmb);
+        const currentSpGmv = lookupSpProductGmv(identity, currentSpGmvLookup);
+        const previousSpGmv = lookupSpProductGmv(identity, compareSpGmvLookup);
+        return {
+          product: identity.product || '未归类产品',
+          category: identity.category || '未归类',
+          currentSpend,
+          previousSpend,
+          currentSpGmv,
+          previousSpGmv,
+          spendChange: relativeChange(currentSpend, previousSpend),
+          spGmvChange: relativeChange(currentSpGmv, previousSpGmv),
+          hasComparableBase: previousSpend > 0 && previousSpGmv > 0,
+        };
+      });
     }
     function renderCategoryChart(categoryRows) {
       const rows = categoryRows.slice(0, 12).reverse();
@@ -3073,7 +3387,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         `站内广告 ROAS 为 ${roas(t.onsite_roas)}；站外按行级汇率转 RMB 后 ROAS 为 ${roas(t.offsite_roas)}，总媒体花费占平台 GMV ${ratio(t.media_spend_ratio)}。`,
         topCategory ? `当前筛选下商品销售额最高品类是 ${topCategory.category}，销售额 ${money(topCategory.product_paid_sales_rmb)}，SP+TT 销量 ${fmt0.format(topCategory.platform_units)}，加购率 ${ratio(topCategory.add_to_cart_rate)}。` : '当前筛选下暂未形成有效品类汇总。',
         topMediaCategory ? `媒体投入最高品类是 ${topMediaCategory.category}，媒体花费 ${money(topMediaCategory.media_spend_rmb)}，综合 ROAS ${roas(topMediaCategory.media_roas)}，媒体花费/商品销售额 ${ratio(topMediaCategory.media_spend_ratio)}。` : '当前筛选下暂无可归因媒体投入。',
-        topOffsite ? `站外花费RMB最高产品是 ${topOffsite.product}，映射品类 ${topOffsite.category || '-'}，花费 ${money(topOffsite.spend_rmb)}，Purchase Value ${money(topOffsite.purchase_value_rmb)}。` : '站外产品维度暂未形成有效汇总。',
+        topOffsite ? `站外花费RMB最高产品是 ${topOffsite.product}，映射品类 ${topOffsite.category || '-'}，花费 ${money(topOffsite.spend_rmb)}，站外GMV ${money(topOffsite.purchase_value_rmb)}。` : '站外产品维度暂未形成有效汇总。',
         `品类表已读取 ${fmt0.format(ref.item_count || 0)} 个 Item ID、${fmt0.format(ref.sku_count || 0)} 个 SKU 与 ${fmt0.format(ref.category_count || 0)} 个品类标签，用于广告、销量与商品的归因兜底。`,
         `数据新鲜度：SP ${freshness.sp_gmv || '-'}，TT ${freshness.tt_gmv || '-'}，站外 ${freshness.offsite || '-'}，站内广告 ${freshness.onsite_ads || '-'}。`,
       ];
@@ -3132,32 +3446,116 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const compareByProduct = new Map((compareOffsiteProductRows || []).map(row => [`${row.category || '-'}||${row.product || '-'}`, row]));
       const spGmvLookup = buildProductGmvLookup(productRows);
       const compareSpGmvLookup = buildProductGmvLookup(compareProductRows);
+      const spProductGmvTotal = sum(productRows || [], 'paid_sales_rmb');
+      const compareSpProductGmvTotal = sum(compareProductRows || [], 'paid_sales_rmb');
       byId('offsiteProductTable').innerHTML = `
-        <table>
-          <thead><tr><th>产品</th><th>归因品类</th><th>SP商品GMV</th><th>花费RMB</th><th>消耗占比</th><th>Purchase Value RMB</th><th>ROAS</th><th>点击</th><th>转化</th><th>加购</th><th>平均汇率</th></tr></thead>
+        <table class="offsite-product-table">
+          <thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>
           <tbody>
             ${rows.map(row => {
               const previous = compareByProduct.get(`${row.category || '-'}||${row.product || '-'}`) || {};
               const spProductGmv = lookupSpProductGmv(row, spGmvLookup);
               const previousSpProductGmv = lookupSpProductGmv(row, compareSpGmvLookup);
+              const spProductGmvShare = spProductGmvTotal ? spProductGmv / spProductGmvTotal : null;
+              const previousSpProductGmvShare = compareSpProductGmvTotal ? previousSpProductGmv / compareSpProductGmvTotal : null;
               return `
                 <tr>
                   <td><div class="product-cell">${escapeHtml(row.product)}</div></td>
-                  <td><span class="category-cell">${escapeHtml(row.category || '-')}</span></td>
                   <td>${tableMetricHtml(spProductGmv, previousSpProductGmv, money)}</td>
+                  <td>${tableMetricHtml(spProductGmvShare, previousSpProductGmvShare, ratio)}</td>
                   <td>${tableMetricHtml(row.spend_rmb, previous.spend_rmb, money, { neutral: true })}</td>
                   <td>${tableMetricHtml(row.spend_share, previous.spend_share, ratio, { neutral: true })}</td>
                   <td>${tableMetricHtml(row.purchase_value_rmb, previous.purchase_value_rmb, money)}</td>
                   <td>${tableMetricHtml(row.roas, previous.roas, roas)}</td>
+                  <td>${tableMetricHtml(row.impressions, previous.impressions, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.clicks, previous.clicks, value => fmt0.format(n(value)))}</td>
-                  <td>${tableMetricHtml(row.conversions, previous.conversions, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.add_to_cart, previous.add_to_cart, value => fmt0.format(n(value)))}</td>
-                  <td>${tableMetricHtml(row.avg_fx, previous.avg_fx, value => value ? fmt2.format(value) : '-', { neutral: true })}</td>
+                  <td>${tableMetricHtml(row.conversions, previous.conversions, value => fmt0.format(n(value)))}</td>
                 </tr>
               `;
             }).join('')}
           </tbody>
         </table>
+      `;
+    }
+    function renderActionSignalGroup(type, title, rows, emptyText) {
+      const visibleRows = rows.slice(0, 4);
+      const isReduce = type === 'reduce';
+      const actionText = isReduce ? '建议减量' : '建议加投';
+      const directionClass = change => change > 0 ? 'up' : (change < 0 ? 'down' : '');
+      return `
+        <section class="action-signal-group ${type}">
+          <div class="action-signal-group-head">
+            <strong>${title}</strong>
+            <span class="action-signal-count">${rows.length} 个商品</span>
+          </div>
+          ${visibleRows.length ? `
+            <ol class="action-signal-list">
+              ${visibleRows.map(row => `
+                <li class="action-signal-item">
+                  <div class="action-signal-copy">
+                    <div class="action-signal-product">
+                      <strong>${escapeHtml(row.product)}</strong>
+                      <span>${escapeHtml(row.category)}</span>
+                    </div>
+                    <div class="action-signal-evidence">
+                      <span>花费 ${money(row.currentSpend)}<b class="signal-delta ${directionClass(row.spendChange)}">${signalChangeText(row.spendChange)}</b></span>
+                      <span>SP商品GMV ${money(row.currentSpGmv)}<b class="signal-delta ${directionClass(row.spGmvChange)}">${signalChangeText(row.spGmvChange)}</b></span>
+                    </div>
+                  </div>
+                  <span class="signal-action">${actionText}</span>
+                </li>
+              `).join('')}
+            </ol>
+            ${rows.length > visibleRows.length ? `<div class="action-signal-count">另有 ${rows.length - visibleRows.length} 个，已按业务影响排序</div>` : ''}
+          ` : `<div class="action-signal-empty">${emptyText}</div>`}
+        </section>
+      `;
+    }
+    function renderOffsiteActionSignals(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows, period) {
+      const target = byId('offsiteActionSignals');
+      if (!target) return;
+      if (period?.invalid) {
+        target.innerHTML = '<div class="action-signal-empty" style="padding:18px">请先选择完整的当前周期与对比周期。</div>';
+        return;
+      }
+      const reduceSpendThreshold = 0.10;
+      const actionRows = buildOffsiteActionRows(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows);
+      const comparableRows = actionRows.filter(row => row.hasComparableBase);
+      const reduceRows = comparableRows
+        .filter(row => row.spendChange >= reduceSpendThreshold && row.spGmvChange < 0)
+        .sort((a, b) => {
+          const impactA = Math.max(a.currentSpend - a.previousSpend, 0) + Math.max(a.previousSpGmv - a.currentSpGmv, 0);
+          const impactB = Math.max(b.currentSpend - b.previousSpend, 0) + Math.max(b.previousSpGmv - b.currentSpGmv, 0);
+          return impactB - impactA;
+        });
+      const scaleRows = comparableRows
+        .filter(row => row.spGmvChange > 0 || (row.spendChange < 0 && row.spGmvChange > row.spendChange))
+        .sort((a, b) => {
+          const impactA = Math.max(a.currentSpGmv - a.previousSpGmv, 0) + Math.max(a.previousSpend - a.currentSpend, 0);
+          const impactB = Math.max(b.currentSpGmv - b.previousSpGmv, 0) + Math.max(b.previousSpend - b.currentSpend, 0);
+          return impactB - impactA;
+        });
+      const scaleEmptyText = '当前周期暂无 GMV 增长或 GMV 跌幅小于花费跌幅的商品。';
+      const category = byId('categoryFilter')?.value || 'ALL';
+      const categoryText = category === 'ALL' ? '全部品类' : category;
+      const currentRange = `${period.current.start} 至 ${period.current.end}`;
+      const compareRange = `${period.compare.start} 至 ${period.compare.end}`;
+      const excludedCount = actionRows.length - comparableRows.length;
+      target.innerHTML = `
+        <div class="action-signal-head">
+          <div class="action-signal-heading">
+            <span class="action-signal-kicker">基础判断</span>
+            <h3>站外投放动作提示</h3>
+            <p>${escapeHtml(categoryText)} · 当前 ${escapeHtml(currentRange)} 对比 ${escapeHtml(compareRange)}</p>
+          </div>
+          <p class="action-signal-rule">花费增幅 ≥10% 且 SP 商品GMV下降，提示减量；SP 商品GMV上涨，或花费下降时 GMV跌幅小于花费跌幅，提示加投。零基期不强行计算环比。</p>
+        </div>
+        <div class="action-signal-grid">
+          ${renderActionSignalGroup('reduce', '减量预警 · 花费增、GMV降', reduceRows, '当前筛选下暂无达到条件的减量预警。')}
+          ${renderActionSignalGroup('scale', '加投机会 · GMV增长 / 相对抗跌', scaleRows, scaleEmptyText)}
+        </div>
+        <p class="action-signal-footnote">共核对 ${actionRows.length} 个站外产品，其中 ${comparableRows.length} 个具备双周期有效基数${excludedCount ? `，${excludedCount} 个因上期花费或上期 SP 商品GMV为 0 未下动作结论` : ''}。执行前再结合库存、利润与素材状态确认。</p>
       `;
     }
     function renderProductTable(productRows, compareProductRows) {
@@ -3271,6 +3669,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       renderCategoryTable(categoryRows, compareCategoryRows);
       renderProductTable(productRows, compareProductRows);
       renderOffsiteProductTable(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows);
+      renderOffsiteActionSignals(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows, period);
       renderDailyTable(rows);
       renderFieldTable();
     }
@@ -3326,10 +3725,122 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         } catch (error) {}
       });
     }
+    const REFRESH_STORAGE_KEY = 'sktMainReportRefreshRequest';
+    const REFRESH_POLL_INTERVAL_MS = 5000;
+    let refreshPollTimer = null;
+    let refreshPollFailures = 0;
+
+    function setRefreshState(state, message, busy = false) {
+      const button = byId('refreshReport');
+      const label = byId('refreshButtonLabel');
+      const status = byId('refreshStatus');
+      button.disabled = busy;
+      button.classList.toggle('is-loading', busy);
+      label.textContent = busy ? (state === 'in_progress' ? '正在刷新' : '等待刷新') : '刷新数据';
+      status.hidden = !message;
+      status.dataset.state = state || '';
+      status.textContent = message || '';
+    }
+
+    function readRefreshRequest() {
+      try {
+        return sessionStorage.getItem(REFRESH_STORAGE_KEY) || '';
+      } catch (error) {
+        return '';
+      }
+    }
+
+    function saveRefreshRequest(requestId) {
+      try {
+        if (requestId) sessionStorage.setItem(REFRESH_STORAGE_KEY, requestId);
+        else sessionStorage.removeItem(REFRESH_STORAGE_KEY);
+      } catch (error) {}
+    }
+
+    async function refreshApi(path, options = {}) {
+      const response = await fetch(path, {
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', ...(options.headers || {}) },
+        ...options,
+      });
+      const contentType = response.headers.get('content-type') || '';
+      const payload = contentType.includes('application/json') ? await response.json() : {};
+      if (!response.ok) {
+        if (response.status === 401) throw new Error('登录已过期，请重新载入页面登录');
+        throw new Error(payload.message || `刷新服务返回 ${response.status}`);
+      }
+      return payload;
+    }
+
+    function stopRefreshPolling() {
+      if (refreshPollTimer) window.clearTimeout(refreshPollTimer);
+      refreshPollTimer = null;
+    }
+
+    async function pollRefreshStatus(requestId) {
+      stopRefreshPolling();
+      try {
+        const result = await refreshApi(`/__refresh?id=${encodeURIComponent(requestId)}`);
+        refreshPollFailures = 0;
+        const status = result.status || 'queued';
+        if (status === 'completed') {
+          saveRefreshRequest('');
+          if (result.conclusion === 'success') {
+            setRefreshState('success', '数据已更新，正在载入最新报表', false);
+            window.setTimeout(() => window.location.reload(), 1200);
+          } else {
+            setRefreshState('failure', result.message || '刷新失败，线上报表已保留原版本', false);
+          }
+          return;
+        }
+        if (status === 'in_progress') {
+          setRefreshState('in_progress', '正在抓取 Google Sheet 并发布报表', true);
+        } else {
+          setRefreshState('queued', result.reused ? '已有刷新任务，正在等待执行' : '刷新任务已提交，正在等待执行', true);
+        }
+      } catch (error) {
+        refreshPollFailures += 1;
+        if (refreshPollFailures >= 3) {
+          saveRefreshRequest('');
+          setRefreshState('failure', error.message || '暂时无法查询刷新状态', false);
+          return;
+        }
+        setRefreshState('queued', '状态查询暂时失败，正在重试', true);
+      }
+      refreshPollTimer = window.setTimeout(() => pollRefreshStatus(requestId), REFRESH_POLL_INTERVAL_MS);
+    }
+
+    async function requestReportRefresh() {
+      stopRefreshPolling();
+      setRefreshState('queued', '正在提交刷新任务', true);
+      try {
+        const result = await refreshApi('/__refresh', { method: 'POST' });
+        const requestId = result.request_id;
+        if (!requestId) throw new Error('刷新服务未返回任务编号');
+        saveRefreshRequest(requestId);
+        refreshPollFailures = 0;
+        setRefreshState(result.status || 'queued', result.reused ? '已有刷新任务，已接入进度' : '刷新任务已提交', true);
+        await pollRefreshStatus(requestId);
+      } catch (error) {
+        saveRefreshRequest('');
+        setRefreshState('failure', error.message || '刷新任务提交失败', false);
+      }
+    }
+
+    function setupRefreshControl() {
+      byId('refreshReport').addEventListener('click', requestReportRefresh);
+      const requestId = readRefreshRequest();
+      if (requestId) {
+        setRefreshState('queued', '正在恢复刷新任务状态', true);
+        pollRefreshStatus(requestId);
+      }
+    }
     function setup() {
       setupDateControls();
       setupCategoryControls();
       setupSideNav();
+      setupRefreshControl();
       byId('periodFilter').addEventListener('change', event => {
         applyPreset(event.target.value);
         renderAll();
@@ -3369,11 +3880,33 @@ def build_html(payload: dict[str, Any]) -> str:
     return HTML_TEMPLATE.replace("__PAYLOAD__", payload_json)
 
 
+def validate_report_html(html: str) -> None:
+    required_fragments = (
+        '<table class="offsite-product-table">',
+        '<thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>',
+        'id="offsiteActionSignals"',
+        "function renderOffsiteActionSignals",
+        'id="refreshReport"',
+        "function setupRefreshControl",
+        "'/__refresh'",
+    )
+    forbidden_fragments = (
+        "<th>Purchase Value RMB</th>",
+        "<th>平均汇率</th>",
+        "<th>归因品类</th><th>SP商品GMV</th>",
+    )
+    missing = [fragment for fragment in required_fragments if fragment not in html]
+    stale = [fragment for fragment in forbidden_fragments if fragment in html]
+    if missing or stale:
+        raise ValueError(f"Report UI contract failed. Missing={missing}; stale={stale}")
+
+
 def run() -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     SITE_DIR.mkdir(parents=True, exist_ok=True)
     payload = build_payload()
     html = build_html(payload)
+    validate_report_html(html)
     output_path = OUTPUT_DIR / "skt_onsite_offsite_alignment.html"
     site_path = SITE_DIR / "skt-onsite-offsite-alignment.html"
     index_path = SITE_DIR / "index.html"

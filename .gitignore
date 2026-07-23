@@ -1,12 +1,16 @@
 *.csv
 data/raw/
+data/dms/
 output/
 site/
 cloudflare_pages/
 publish_logs/
+.preserved/
 .wrangler/
 __pycache__/
 pipelines/__pycache__/
 *.pyc
 *.part
 .DS_Store
+index.html
+skt-material-analysis.html

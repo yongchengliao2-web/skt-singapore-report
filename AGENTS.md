@@ -30,7 +30,7 @@ The first version should support:
 
 For platform GMV:
 
-- SP uses `GMV(Customer Payment)` from `SP店铺实收GMV`, with exchange rate from `品类表`.
+- SP uses `GMV(After Seller Discounts)` (column I) from `SP店铺实收GMV`, with exchange rate from `品类表`.
 - TT uses `GMV(After seller discounts) RMB` from `TT-销售GMV`.
 
 Do not substitute onsite product GMV or onsite ad GMV for platform GMV.
@@ -41,4 +41,3 @@ Do not substitute onsite product GMV or onsite ad GMV for platform GMV.
 - Keep source field mapping explicit in `config/data_contract.yaml`.
 - Save generated reports to `output/` and copy the public page to `site/`.
 - Do not hardcode conclusions that are not supported by the current source data.
-

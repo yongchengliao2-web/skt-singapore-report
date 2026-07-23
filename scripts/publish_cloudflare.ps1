@@ -4,7 +4,8 @@ param(
   [string]$CompatibilityDate = "2026-07-10",
   [switch]$CreateProject,
   [switch]$SkipBuild,
-  [switch]$NoVerify
+  [switch]$NoVerify,
+  [switch]$FetchDms
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +19,7 @@ $BundledPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary
 $Python = if (Test-Path $BundledPython) { $BundledPython } else { "python" }
 $Npx = "npx.cmd"
 $PageUrl = "https://$ProjectName.pages.dev/"
+$PasswordWorkerPath = Join-Path $ProjectRoot "scripts\cloudflare_password_worker.js"
 
 function Write-Step {
   param([string]$Message)
@@ -34,15 +36,42 @@ function Invoke-LoggedNative {
   )
 
   Write-Step "RUN $FilePath $($Arguments -join ' ')"
+  $previousErrorActionPreference = $ErrorActionPreference
   Push-Location $WorkingDirectory
   try {
+    # Native tools may write warnings and progress to stderr even when they succeed.
+    $ErrorActionPreference = "Continue"
     & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $LogPath -Append
     $exitCode = $LASTEXITCODE
   } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
     Pop-Location
   }
   if ($exitCode -ne 0) {
     throw "Command failed with exit code ${exitCode}: $FilePath"
+  }
+}
+
+function Invoke-LoggedNativeWithRetry {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments,
+    [string]$WorkingDirectory = $ProjectRoot,
+    [int]$MaxAttempts = 3
+  )
+
+  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    try {
+      Invoke-LoggedNative -FilePath $FilePath -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+      return
+    } catch {
+      if ($attempt -ge $MaxAttempts) {
+        throw
+      }
+      $delaySeconds = $attempt * 6
+      Write-Step "RETRY $attempt/$MaxAttempts after ${delaySeconds}s: $($_.Exception.Message)"
+      Start-Sleep -Seconds $delaySeconds
+    }
   }
 }
 
@@ -61,11 +90,25 @@ function Reset-DeployDir {
 }
 
 function Test-LivePage {
-  $code = & curl.exe -L -s -o NUL -w "%{http_code}" $PageUrl
-  Write-Step "VERIFY HTTP $code $PageUrl"
-  if ($code -ne "200") {
-    throw "Cloudflare page verification failed: HTTP $code"
+  for ($attempt = 1; $attempt -le 12; $attempt++) {
+    $code = & curl.exe -L -s -o NUL -w "%{http_code}" $PageUrl
+    Write-Step "VERIFY password gate HTTP $code $PageUrl (attempt $attempt/12)"
+    if ($code -eq "401") {
+      $body = (& curl.exe -L -s $PageUrl) -join "`n"
+      if ($body -notmatch 'action="/__auth"') {
+        throw "Cloudflare password gate returned HTTP 401 without the login page."
+      }
+      if ($body -match "const DATA =|PAGE_DATA|library_rows") {
+        throw "Cloudflare password gate leaked report data before authentication."
+      }
+      Write-Step "VERIFY password gate active; unauthenticated report data is blocked"
+      return
+    }
+    if ($attempt -lt 12) {
+      Start-Sleep -Seconds 5
+    }
   }
+  throw "Cloudflare password gate verification failed: expected HTTP 401, received HTTP $code"
 }
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -78,7 +121,11 @@ if (-not $env:CLOUDFLARE_API_TOKEN) {
 }
 
 if (-not $SkipBuild) {
-  Invoke-LoggedNative -FilePath $Python -Arguments @("pipelines\build_skt_alignment.py")
+  $updateArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $ProjectRoot "scripts\update_report.ps1"))
+  if ($FetchDms) {
+    $updateArgs += "-FetchDms"
+  }
+  Invoke-LoggedNative -FilePath "powershell.exe" -Arguments $updateArgs
 } else {
   Write-Step "SKIP build"
 }
@@ -87,14 +134,24 @@ $IndexPath = Join-Path $ProjectRoot "index.html"
 if (!(Test-Path $IndexPath)) {
   throw "Expected public index was not generated: $IndexPath"
 }
+$SiteDir = Join-Path $ProjectRoot "site"
+if (!(Test-Path $SiteDir)) {
+  throw "Expected site directory was not generated: $SiteDir"
+}
+if (!(Test-Path $PasswordWorkerPath)) {
+  throw "Refusing to publish without the password gate: $PasswordWorkerPath"
+}
 
 Reset-DeployDir
-Copy-Item -LiteralPath $IndexPath -Destination (Join-Path $DeployDir "index.html") -Force
+Get-ChildItem -LiteralPath $SiteDir -Force | ForEach-Object {
+  Copy-Item -LiteralPath $_.FullName -Destination $DeployDir -Recurse -Force
+}
+Copy-Item -LiteralPath $PasswordWorkerPath -Destination (Join-Path $DeployDir "_worker.js") -Force
 Set-Content -LiteralPath (Join-Path $DeployDir "_headers") -Value @"
 /*
   Cache-Control: no-store
 "@ -Encoding UTF8
-Write-Step "PREPARED $DeployDir"
+Write-Step "PREPARED password-protected bundle $DeployDir"
 
 if ($CreateProject) {
   try {
@@ -108,7 +165,7 @@ if ($CreateProject) {
   }
 }
 
-Invoke-LoggedNative -FilePath $Npx -Arguments @(
+Invoke-LoggedNativeWithRetry -FilePath $Npx -Arguments @(
   "wrangler", "pages", "deploy", $DeployDir,
   "--project-name", $ProjectName,
   "--branch", $Branch,
