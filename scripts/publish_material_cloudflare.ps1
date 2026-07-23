@@ -38,10 +38,15 @@ try {
     Remove-Item Env:SKT_REPORT_SESSION_TOKEN -ErrorAction SilentlyContinue
   }
 
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "scripts\publish_cloudflare.ps1" `
-    -ProjectName $ProjectName `
-    -SkipBuild `
-    -NoVerify:$NoVerify
+  $publishArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", (Join-Path $PSScriptRoot "publish_cloudflare.ps1"),
+    "-ProjectName", $ProjectName,
+    "-SkipBuild"
+  )
+  if ($NoVerify) { $publishArgs += "-NoVerify" }
+  & powershell.exe @publishArgs
   if ($LASTEXITCODE -ne 0) {
     throw "Material deployment failed with exit code $LASTEXITCODE"
   }
