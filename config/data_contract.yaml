@@ -88,7 +88,9 @@ source_tabs:
     sku_field: SKU
     sku_product_name_field: 产品名
     sku_category_field: 品类
-    rule: Use 品类表 as the source of truth for SKU/Item/category mapping and SP SGD-to-RMB exchange rate.
+    offsite_product_field: 站外投放产品
+    offsite_product_source_column: T
+    rule: Use 品类表 as the source of truth for SKU/Item/category mapping, SP SGD-to-RMB exchange rate, and the offsite advertised-product catalog in column T. Match each column-T product to at most one onsite product; onsite products with data that remain unmatched are marked 未投放产品.
     mapping_priority:
       - Exact Item ID match.
       - Exact SKU match.

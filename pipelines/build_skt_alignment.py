@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 from datetime import date, datetime, timedelta
+from difflib import SequenceMatcher
 import json
 from pathlib import Path
 import re
@@ -23,6 +24,7 @@ DEFAULT_FX_RATE = 5.35
 DEFAULT_OFFSITE_FX_RATE = 6.9
 ONSITE_PRODUCT_IMPRESSION_INDEX = 13
 ONSITE_PRODUCT_CLICK_INDEX = 14
+OFFSITE_PRODUCT_CATALOG_INDEX = 19
 
 SOURCES: dict[str, dict[str, Any]] = {
     "sp_gmv": {
@@ -331,6 +333,8 @@ def load_category_reference(path: Path) -> dict[str, Any]:
     sku_to_category: dict[str, str] = {}
     sku_name_to_category: dict[str, str] = {}
     shop_name_to_store: dict[str, str] = {}
+    offsite_products: list[str] = []
+    offsite_product_by_normalized: dict[str, str] = {}
     categories: set[str] = set()
 
     for row in rows[1:]:
@@ -358,6 +362,12 @@ def load_category_reference(path: Path) -> dict[str, Any]:
             put_mapping(sku_to_category, sku, sku_category)
         if sku_name and sku_category:
             put_mapping(sku_name_to_category, sku_name, sku_category)
+
+        offsite_product = safe_cell(row, OFFSITE_PRODUCT_CATALOG_INDEX)
+        normalized_offsite_product = normalize_text(offsite_product)
+        if offsite_product and normalized_offsite_product not in offsite_product_by_normalized:
+            offsite_products.append(offsite_product)
+            offsite_product_by_normalized[normalized_offsite_product] = offsite_product
 
     searchable_names: list[tuple[str, str]] = []
     for mapping in (item_name_to_category, sku_name_to_category):
@@ -391,6 +401,8 @@ def load_category_reference(path: Path) -> dict[str, Any]:
         "sku_to_category": sku_to_category,
         "sku_name_to_category": sku_name_to_category,
         "shop_name_to_store": shop_name_to_store,
+        "offsite_products": offsite_products,
+        "offsite_product_by_normalized": offsite_product_by_normalized,
         "categories": sorted(categories),
         "searchable_names": searchable_names,
         "keyword_categories": keyword_categories,
@@ -398,7 +410,125 @@ def load_category_reference(path: Path) -> dict[str, Any]:
         "item_count": len(item_id_to_category),
         "sku_count": len(sku_to_category),
         "shop_count": len(shop_name_to_store),
+        "offsite_product_count": len(offsite_products),
     }
+
+
+PRODUCT_CORE_TERMS = (
+    "水油喷雾",
+    "防晒喷雾",
+    "定妆喷雾",
+    "唇部精华",
+    "奶皮面膜",
+    "泥膜棒",
+    "洗面奶",
+    "素颜霜",
+    "气垫",
+    "面霜",
+    "精华",
+    "喷雾",
+    "面膜",
+    "粉饼",
+    "凝胶",
+    "洁面",
+    "棉片",
+    "防晒",
+)
+
+
+def product_is_combo(value: Any) -> bool:
+    text = clean_text(value).casefold()
+    return "combo" in text or bool(re.search(r"[+＋/&、，,]", text))
+
+
+def strip_product_spec(value: Any) -> str:
+    text = normalize_text(value)
+    text = re.sub(r"\d+(?:\.\d+)?(?:ml|g|pcs?|片|支|件|粒|盒|包)?", "", text, flags=re.IGNORECASE)
+    return re.sub(r"(?:大样|小样|副链|正装)$", "", text)
+
+
+def product_core(value: Any) -> str:
+    text = normalize_text(value)
+    return next((term for term in PRODUCT_CORE_TERMS if normalize_text(term) in text), "")
+
+
+def product_match_score(catalog_product: str, onsite_product: str, onsite_title: str = "") -> float:
+    catalog_key = normalize_text(catalog_product)
+    onsite_key = normalize_text(onsite_product)
+    if not catalog_key or not onsite_key:
+        return 0.0
+    if catalog_key == onsite_key:
+        return 1000.0
+
+    catalog_base = strip_product_spec(catalog_product)
+    onsite_base = strip_product_spec(onsite_product)
+    if catalog_base and catalog_base == onsite_base:
+        return 960.0
+
+    if product_is_combo(catalog_product) != product_is_combo(onsite_product):
+        return 0.0
+
+    if product_is_combo(catalog_product):
+        similarity = SequenceMatcher(None, catalog_base, onsite_base).ratio()
+        return 720.0 + similarity * 100.0 if similarity >= 0.72 else 0.0
+
+    catalog_core = product_core(catalog_product)
+    onsite_core = product_core(onsite_product)
+    if not catalog_core or catalog_core != onsite_core:
+        return 0.0
+
+    shorter, longer = sorted((catalog_base, onsite_base), key=len)
+    if shorter and shorter in longer:
+        return 840.0 + (len(shorter) / max(len(longer), 1)) * 100.0
+
+    core_key = normalize_text(catalog_core)
+    catalog_descriptor = catalog_base.replace(core_key, "")
+    onsite_descriptor = onsite_base.replace(core_key, "")
+    common_prefix = 0
+    for left, right in zip(catalog_descriptor, onsite_descriptor):
+        if left != right:
+            break
+        common_prefix += 1
+
+    catalog_ascii = set(re.findall(r"[a-z]+\d*|\d+[a-z]+", catalog_key, flags=re.IGNORECASE))
+    title_key = normalize_text(onsite_title)
+    onsite_search_text = f"{onsite_key}{title_key}".casefold()
+    ascii_match = bool(catalog_ascii) and all(token.casefold() in onsite_search_text for token in catalog_ascii)
+    if ascii_match:
+        length_score = min(len(onsite_base), len(catalog_base)) / max(len(onsite_base), len(catalog_base), 1)
+        return 730.0 + length_score * 60.0
+
+    shared_chars = set(catalog_descriptor) & set(onsite_descriptor)
+    similarity = SequenceMatcher(None, catalog_descriptor, onsite_descriptor).ratio()
+    if common_prefix >= 2:
+        return 680.0 + min(common_prefix, 5) * 10.0 + similarity * 20.0
+    if len(shared_chars) >= 2 and similarity >= 0.58:
+        return 640.0 + similarity * 40.0
+    return 0.0
+
+
+def assign_onsite_products_to_offsite_catalog(
+    category_ref: dict[str, Any], product_catalog_rows: list[dict[str, Any]]
+) -> dict[tuple[str, str], str]:
+    candidates: list[tuple[float, float, str, tuple[str, str]]] = []
+    for row in product_catalog_rows:
+        product = clean_text(row.get("product"))
+        category = clean_text(row.get("category")) or "未归类"
+        identity = (normalize_text(product), category)
+        for catalog_product in category_ref.get("offsite_products", []):
+            score = product_match_score(catalog_product, product, clean_text(row.get("product_title")))
+            if score:
+                candidates.append((score, float(row.get("paid_sales_rmb") or 0.0), catalog_product, identity))
+
+    assignments: dict[tuple[str, str], str] = {}
+    assigned_catalog_products: set[str] = set()
+    for _, _, catalog_product, identity in sorted(candidates, reverse=True):
+        catalog_key = normalize_text(catalog_product)
+        if identity in assignments or catalog_key in assigned_catalog_products:
+            continue
+        assignments[identity] = catalog_product
+        assigned_catalog_products.add(catalog_key)
+    return assignments
 
 
 def resolve_category(category_ref: dict[str, Any], *values: Any, default: str = "未归类") -> str:
@@ -615,7 +745,11 @@ def load_offsite(
         item["offsite_conversions"] += conversions
         item["offsite_add_to_cart"] += add_to_cart
 
-        product = str(get_value(row, "产品") or "未归类产品").strip() or "未归类产品"
+        source_product = str(get_value(row, "产品") or "未归类产品").strip() or "未归类产品"
+        advertised_product = category_ref.get("offsite_product_by_normalized", {}).get(
+            normalize_text(source_product), ""
+        )
+        product = advertised_product or source_product
         categories = resolve_categories(category_ref, product, get_value(row, "Ad_name"), get_value(row, "campaign_name"))
         category_label = " / ".join(categories)
         product_row = by_product.setdefault(
@@ -623,6 +757,7 @@ def load_offsite(
             {
                 "product": product,
                 "category": category_label,
+                "advertised_product": advertised_product,
                 "spend": 0.0,
                 "spend_rmb": 0.0,
                 "purchase_value": 0.0,
@@ -652,6 +787,7 @@ def load_offsite(
                 "date": day,
                 "product": product,
                 "category": category_label,
+                "advertised_product": advertised_product,
                 "spend": 0.0,
                 "spend_rmb": 0.0,
                 "purchase_value": 0.0,
@@ -847,6 +983,41 @@ def load_onsite_products(
         return [], [], []
 
     headers = raw_rows[0]
+    product_catalog: dict[tuple[str, str], dict[str, Any]] = {}
+    for values in raw_rows[1:]:
+        row = dict(zip(headers, values))
+        if not parse_date(get_value(row, "日期date")):
+            continue
+        category = clean_text(get_value(row, "品类"))
+        if not category:
+            category = resolve_category(
+                category_ref,
+                get_value(row, "Item ID"),
+                get_value(row, "链接"),
+                get_value(row, "Product"),
+                get_value(row, "SKU"),
+            )
+        product = clean_text(get_value(row, "链接") or get_value(row, "Product")) or "未命名单品"
+        row_fx = parse_number(get_value(row, "汇率", "Exchange Rate", "FX")) or fx_rate
+        paid_sales_sgd = parse_number(get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"))
+        catalog_row = product_catalog.setdefault(
+            (normalize_text(product), category),
+            {
+                "product": product,
+                "category": category,
+                "product_title": clean_text(get_value(row, "Product")),
+                "paid_sales_rmb": 0.0,
+            },
+        )
+        catalog_row["paid_sales_rmb"] += paid_sales_sgd * row_fx
+        title = clean_text(get_value(row, "Product"))
+        if len(title) > len(clean_text(catalog_row.get("product_title"))):
+            catalog_row["product_title"] = title
+
+    onsite_advertised_products = assign_onsite_products_to_offsite_catalog(
+        category_ref, list(product_catalog.values())
+    )
+
     for values in raw_rows[1:]:
         row = dict(zip(headers, values))
         day = parse_date(get_value(row, "日期date"))
@@ -863,6 +1034,7 @@ def load_onsite_products(
                 get_value(row, "SKU"),
             )
         product = str(get_value(row, "链接") or get_value(row, "Product") or "未命名单品").strip() or "未命名单品"
+        advertised_product = onsite_advertised_products.get((normalize_text(product), category), "")
         paid_sales_sgd = parse_number(get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"))
         row_fx = parse_number(get_value(row, "汇率", "Exchange Rate", "FX"))
         if row_fx <= 0:
@@ -927,6 +1099,7 @@ def load_onsite_products(
             {
                 "product": product,
                 "category": category,
+                "advertised_product": advertised_product,
                 "paid_sales_sgd": 0.0,
                 "paid_sales_rmb": 0.0,
                 "paid_units": 0.0,
@@ -952,6 +1125,7 @@ def load_onsite_products(
                 "date": day,
                 "product": product,
                 "category": category,
+                "advertised_product": advertised_product,
                 "paid_sales_sgd": 0.0,
                 "paid_sales_rmb": 0.0,
                 "paid_units": 0.0,
@@ -1287,6 +1461,15 @@ def build_payload() -> dict[str, Any]:
             "item_count": category_ref["item_count"],
             "sku_count": category_ref["sku_count"],
             "shop_count": category_ref["shop_count"],
+            "offsite_product_count": category_ref["offsite_product_count"],
+            "offsite_products": category_ref["offsite_products"],
+            "onsite_product_match_count": len(
+                {
+                    row.get("advertised_product")
+                    for row in product_rows
+                    if row.get("advertised_product")
+                }
+            ),
         },
         "unit_rows_sample_size": len(unit_rows),
         "field_map": [
@@ -1329,8 +1512,8 @@ def build_payload() -> dict[str, Any]:
                 "module": "品类映射",
                 "sheet": "品类表",
                 "date": "无",
-                "metric": "Item ID / 单品 / SKU / 产品名 / 品类 / 汇率",
-                "normalization": "用于 SP 汇率、单品/广告/销量品类归因；精确匹配优先，名称与关键词兜底",
+                "metric": "Item ID / 单品 / SKU / 产品名 / 品类 / 汇率 / T列站外投放产品",
+                "normalization": "用于 SP 汇率、品类归因及站外产品清单；T列一对一匹配站内商品，未命中但站内有数的商品标记为未投放",
             },
             {
                 "module": "品类销量补充",
@@ -2210,8 +2393,59 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       width: 18%;
     }
     .offsite-product-table .product-cell {
+      display: flex;
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 5px;
       min-width: 0;
       max-width: none;
+    }
+    .placement-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 2px 6px;
+      border: 1px solid #b9d9cb;
+      border-radius: 4px;
+      background: #edf7f2;
+      color: #146b52;
+      font-size: 10px;
+      font-weight: 900;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .placement-badge.unadvertised {
+      border-color: #d6ddd9;
+      background: #f4f6f5;
+      color: #667b73;
+    }
+    .offsite-product-group-row td {
+      padding: 9px 10px;
+      border-bottom-color: #c8ded4;
+      background: #eaf4ef;
+      color: var(--accent);
+      text-align: left;
+    }
+    .offsite-product-group-row.unadvertised td {
+      border-bottom-color: #d9e1dd;
+      background: #f2f5f3;
+      color: var(--muted);
+    }
+    .offsite-product-group-row strong {
+      margin-right: 9px;
+      font-size: 12px;
+      font-weight: 950;
+    }
+    .offsite-product-group-row span {
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .not-advertised-value {
+      display: inline-block;
+      min-width: 20px;
+      color: #9aa8a2;
+      font-weight: 800;
+      text-align: center;
     }
     .offsite-product-table th:not(:first-child),
     .offsite-product-table td:not(:first-child) {
@@ -2506,7 +2740,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="section-head">
         <div>
           <h2>站外产品投放明细</h2>
-          <p class="section-note">按产品汇总展示 SP 商品GMV、GMV占比、人民币花费、站外GMV、ROAS，以及展示、点击、加购、转化；GMV占比为商品GMV占当前筛选下全部商品GMV，同样支持周期环比。</p>
+          <p class="section-note">已投放产品以「品类表」T列为准，并与站内商品一对一匹配；其余站内有经营数据的商品列入“未投放产品”。SP商品GMV、占比及站外指标均随日期和品类筛选刷新，并对比上期。</p>
         </div>
       </div>
       <div class="table-wrap" id="offsiteProductTable"></div>
@@ -3303,6 +3537,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           if (!byProduct.has(key)) byProduct.set(key, {
             product: row.product || '未命名单品',
             category: row.category || '未归类',
+            advertised_product: row.advertised_product || '',
             paid_sales_sgd: 0,
             paid_sales_rmb: 0,
             paid_units: 0,
@@ -3343,6 +3578,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           if (!byProduct.has(key)) byProduct.set(key, {
             product: row.product || '未归类产品',
             category: row.category || '未归类',
+            advertised_product: row.advertised_product || '',
             spend: 0,
             spend_rmb: 0,
             purchase_value: 0,
@@ -3377,61 +3613,134 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function normalizeProductKey(value) {
       return String(value || '').toLowerCase().replace(/[\\s\\-_/|()+（）\\[\\]【】,，.。:：]+/g, '');
     }
-    function buildProductGmvLookup(productRows) {
-      const lookup = { byCategoryName: new Map(), byName: new Map(), byCategory: new Map(), all: [] };
-      (productRows || []).forEach(row => {
-        const category = String(row.category || '-');
-        const nameKey = normalizeProductKey(row.product);
-        if (!nameKey) return;
-        const entry = {
-          category,
-          product: row.product || '-',
-          nameKey,
-          gmv: n(row.paid_sales_rmb),
-        };
-        const categoryNameKey = `${category}||${nameKey}`;
-        const currentCategoryName = lookup.byCategoryName.get(categoryNameKey);
-        if (!currentCategoryName || entry.gmv > currentCategoryName.gmv) lookup.byCategoryName.set(categoryNameKey, entry);
-        const currentName = lookup.byName.get(nameKey);
-        if (!currentName || entry.gmv > currentName.gmv) lookup.byName.set(nameKey, entry);
-        if (!lookup.byCategory.has(category)) lookup.byCategory.set(category, []);
-        lookup.byCategory.get(category).push(entry);
-        lookup.all.push(entry);
-      });
-      return lookup;
+    const offsiteMetricFields = [
+      'spend', 'spend_rmb', 'purchase_value', 'purchase_value_rmb',
+      'impressions', 'conversions', 'clicks', 'add_to_cart',
+    ];
+    const onsiteProductActivityFields = [
+      'paid_sales_rmb', 'paid_units', 'visitors', 'page_views',
+      'add_to_cart_visitors', 'product_clicks', 'product_impressions',
+    ];
+    function hasOnsiteProductActivity(row) {
+      return onsiteProductActivityFields.some(field => n(row?.[field]) !== 0);
     }
-    function productKeyOverlapScore(leftKey, rightKey) {
-      if (!leftKey || !rightKey) return 0;
-      const leftChars = [...new Set([...leftKey])];
-      const rightChars = new Set([...rightKey]);
-      const overlap = leftChars.filter(char => rightChars.has(char)).length;
-      return overlap / Math.max(leftChars.length, 1);
+    function aggregateAdvertisedOnsiteRows(rows) {
+      const byAdvertisedProduct = new Map();
+      (rows || [])
+        .filter(row => row.advertised_product && hasOnsiteProductActivity(row))
+        .forEach(row => {
+          const key = normalizeProductKey(row.advertised_product);
+          if (!byAdvertisedProduct.has(key)) byAdvertisedProduct.set(key, {
+            product: row.advertised_product,
+            category: row.category || '未归类',
+            source_product: row.product || '',
+            paid_sales_rmb: 0,
+            visitors: 0,
+          });
+          const target = byAdvertisedProduct.get(key);
+          target.paid_sales_rmb += n(row.paid_sales_rmb);
+          target.visitors += n(row.visitors);
+        });
+      return byAdvertisedProduct;
     }
-    function lookupSpProductGmv(row, lookup) {
-      if (!row || !lookup) return 0;
-      const category = String(row.category || '-');
-      const nameKey = normalizeProductKey(row.product);
-      if (!nameKey) return 0;
-      const exact = lookup.byCategoryName.get(`${category}||${nameKey}`);
-      if (exact) return exact.gmv;
-      const byName = lookup.byName.get(nameKey);
-      if (byName) return byName.gmv;
-      const fuzzy = (lookup.byCategory.get(category) || [])
-        .filter(item => item.nameKey.includes(nameKey) || nameKey.includes(item.nameKey))
-        .sort((a, b) => b.gmv - a.gmv)[0];
-      if (fuzzy) return fuzzy.gmv;
-      const globalContains = (lookup.all || [])
-        .filter(item => item.nameKey.includes(nameKey) || nameKey.includes(item.nameKey))
-        .sort((a, b) => b.gmv - a.gmv)[0];
-      if (globalContains) return globalContains.gmv;
-      const overlap = (lookup.byCategory.get(category) || [])
-        .map(item => ({ ...item, score: productKeyOverlapScore(nameKey, item.nameKey) }))
-        .filter(item => item.score >= 0.45)
-        .sort((a, b) => (b.score - a.score) || (b.gmv - a.gmv))[0];
-      return overlap ? overlap.gmv : 0;
+    function aggregateAdvertisedOffsiteRows(rows) {
+      const byAdvertisedProduct = new Map();
+      (rows || [])
+        .filter(row => row.advertised_product)
+        .forEach(row => {
+          const key = normalizeProductKey(row.advertised_product);
+          if (!byAdvertisedProduct.has(key)) byAdvertisedProduct.set(key, {
+            product: row.advertised_product,
+            category: row.category || '未归类',
+            advertised_product: row.advertised_product,
+            spend: 0,
+            spend_rmb: 0,
+            purchase_value: 0,
+            purchase_value_rmb: 0,
+            impressions: 0,
+            conversions: 0,
+            clicks: 0,
+            add_to_cart: 0,
+          });
+          const target = byAdvertisedProduct.get(key);
+          offsiteMetricFields.forEach(field => { target[field] += n(row[field]); });
+        });
+      return byAdvertisedProduct;
     }
-    function offsiteProductKey(row) {
-      return `${row?.category || '-'}||${row?.product || '-'}`;
+    function indexUnadvertisedOnsiteRows(rows) {
+      const byProduct = new Map();
+      (rows || [])
+        .filter(row => !row.advertised_product && hasOnsiteProductActivity(row))
+        .forEach(row => {
+          const key = `${row.category || '未归类'}||${normalizeProductKey(row.product)}`;
+          byProduct.set(key, row);
+        });
+      return byProduct;
+    }
+    function offsiteDisplayRow(key, status, offsiteRow, onsiteRow, identity, productGmvTotal, offsiteSpendTotal) {
+      const advertised = status === 'advertised';
+      const product = advertised
+        ? (offsiteRow?.product || onsiteRow?.product || identity?.product || '未归类产品')
+        : (onsiteRow?.product || identity?.product || '未命名单品');
+      const category = onsiteRow?.category || offsiteRow?.category || identity?.category || '未归类';
+      const row = {
+        key: `${status}||${key}`,
+        product,
+        category,
+        placement_status: status,
+        source_product: onsiteRow?.source_product || onsiteRow?.product || '',
+        sp_product_gmv: n(onsiteRow?.paid_sales_rmb),
+        visitors: n(onsiteRow?.visitors),
+      };
+      offsiteMetricFields.forEach(field => { row[field] = advertised ? n(offsiteRow?.[field]) : 0; });
+      row.gmv_share = productGmvTotal ? row.sp_product_gmv / productGmvTotal : null;
+      row.spend_share = advertised && offsiteSpendTotal ? row.spend_rmb / offsiteSpendTotal : null;
+      row.roas = advertised && row.spend_rmb ? row.purchase_value_rmb / row.spend_rmb : null;
+      return row;
+    }
+    function buildOffsiteProductView(currentOffsiteRows, compareOffsiteRows, currentProductRows, compareProductRows) {
+      const currentOffsite = aggregateAdvertisedOffsiteRows(currentOffsiteRows);
+      const compareOffsite = aggregateAdvertisedOffsiteRows(compareOffsiteRows);
+      const currentAdvertisedOnsite = aggregateAdvertisedOnsiteRows(currentProductRows);
+      const compareAdvertisedOnsite = aggregateAdvertisedOnsiteRows(compareProductRows);
+      const currentUnadvertised = indexUnadvertisedOnsiteRows(currentProductRows);
+      const compareUnadvertised = indexUnadvertisedOnsiteRows(compareProductRows);
+      const advertisedKeys = new Set([
+        ...currentOffsite.keys(), ...compareOffsite.keys(),
+        ...currentAdvertisedOnsite.keys(), ...compareAdvertisedOnsite.keys(),
+      ]);
+      const unadvertisedKeys = new Set([...currentUnadvertised.keys(), ...compareUnadvertised.keys()]);
+      const advertisedIdentity = new Map();
+      advertisedKeys.forEach(key => advertisedIdentity.set(
+        key,
+        currentOffsite.get(key) || compareOffsite.get(key) || currentAdvertisedOnsite.get(key) || compareAdvertisedOnsite.get(key),
+      ));
+      const unadvertisedIdentity = new Map();
+      unadvertisedKeys.forEach(key => unadvertisedIdentity.set(
+        key,
+        currentUnadvertised.get(key) || compareUnadvertised.get(key),
+      ));
+
+      function rowsForRange(offsiteIndex, advertisedOnsiteIndex, unadvertisedIndex, productRows, offsiteRows) {
+        const productGmvTotal = sum(productRows || [], 'paid_sales_rmb');
+        const offsiteSpendTotal = sum(offsiteRows || [], 'spend_rmb');
+        const advertisedRows = [...advertisedKeys].map(key => offsiteDisplayRow(
+          key, 'advertised', offsiteIndex.get(key), advertisedOnsiteIndex.get(key),
+          advertisedIdentity.get(key), productGmvTotal, offsiteSpendTotal,
+        ));
+        const unadvertisedRows = [...unadvertisedKeys].map(key => offsiteDisplayRow(
+          key, 'unadvertised', null, unadvertisedIndex.get(key),
+          unadvertisedIdentity.get(key), productGmvTotal, offsiteSpendTotal,
+        ));
+        advertisedRows.sort((a, b) => (n(b.spend_rmb) - n(a.spend_rmb)) || (n(b.sp_product_gmv) - n(a.sp_product_gmv)));
+        unadvertisedRows.sort((a, b) => (n(b.sp_product_gmv) - n(a.sp_product_gmv)) || (n(b.visitors) - n(a.visitors)));
+        return [...advertisedRows, ...unadvertisedRows];
+      }
+
+      return {
+        current: rowsForRange(currentOffsite, currentAdvertisedOnsite, currentUnadvertised, currentProductRows, currentOffsiteRows),
+        compare: rowsForRange(compareOffsite, compareAdvertisedOnsite, compareUnadvertised, compareProductRows, compareOffsiteRows),
+      };
     }
     function relativeChange(current, previous) {
       const base = n(previous);
@@ -3443,20 +3752,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const value = Number(change) * 100;
       return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
     }
-    function buildOffsiteActionRows(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows) {
-      const currentByProduct = new Map((offsiteProductRows || []).map(row => [offsiteProductKey(row), row]));
-      const compareByProduct = new Map((compareOffsiteProductRows || []).map(row => [offsiteProductKey(row), row]));
+    function buildOffsiteActionRows(offsiteProductRows, compareOffsiteProductRows) {
+      const currentByProduct = new Map(
+        (offsiteProductRows || []).filter(row => row.placement_status === 'advertised').map(row => [row.key, row]),
+      );
+      const compareByProduct = new Map(
+        (compareOffsiteProductRows || []).filter(row => row.placement_status === 'advertised').map(row => [row.key, row]),
+      );
       const productKeys = new Set([...currentByProduct.keys(), ...compareByProduct.keys()]);
-      const currentSpGmvLookup = buildProductGmvLookup(productRows);
-      const compareSpGmvLookup = buildProductGmvLookup(compareProductRows);
       return [...productKeys].map(key => {
         const current = currentByProduct.get(key) || {};
         const previous = compareByProduct.get(key) || {};
         const identity = currentByProduct.get(key) || compareByProduct.get(key) || {};
         const currentSpend = n(current.spend_rmb);
         const previousSpend = n(previous.spend_rmb);
-        const currentSpGmv = lookupSpProductGmv(identity, currentSpGmvLookup);
-        const previousSpGmv = lookupSpProductGmv(identity, compareSpGmvLookup);
+        const currentSpGmv = n(current.sp_product_gmv);
+        const previousSpGmv = n(previous.sp_product_gmv);
         return {
           product: identity.product || '未归类产品',
           category: identity.category || '未归类',
@@ -3628,43 +3939,44 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </table>
       `;
     }
-    function renderOffsiteProductTable(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows) {
-      const rows = offsiteProductRows.slice(0, 30);
+    function renderOffsiteProductTable(offsiteProductRows, compareOffsiteProductRows) {
+      const rows = offsiteProductRows || [];
       if (!rows.length) {
-        byId('offsiteProductTable').innerHTML = '<div class="empty-state">暂无站外产品数据</div>';
+        byId('offsiteProductTable').innerHTML = '<div class="empty-state">当前周期暂无可核对的产品数据</div>';
         return;
       }
-      const compareByProduct = new Map((compareOffsiteProductRows || []).map(row => [`${row.category || '-'}||${row.product || '-'}`, row]));
-      const spGmvLookup = buildProductGmvLookup(productRows);
-      const compareSpGmvLookup = buildProductGmvLookup(compareProductRows);
-      const spProductGmvTotal = sum(productRows || [], 'paid_sales_rmb');
-      const compareSpProductGmvTotal = sum(compareProductRows || [], 'paid_sales_rmb');
+      const compareByProduct = new Map((compareOffsiteProductRows || []).map(row => [row.key, row]));
+      const advertisedRows = rows.filter(row => row.placement_status === 'advertised');
+      const unadvertisedRows = rows.filter(row => row.placement_status === 'unadvertised');
+      const unavailable = '<span class="not-advertised-value">-</span>';
+      const renderRows = (groupRows, status) => groupRows.map(row => {
+        const previous = compareByProduct.get(row.key) || {};
+        const advertised = status === 'advertised';
+        const badge = advertised
+          ? '<span class="placement-badge advertised">T列投放产品</span>'
+          : '<span class="placement-badge unadvertised">未投放产品</span>';
+        return `
+          <tr>
+            <td><div class="product-cell"><span>${escapeHtml(row.product)}</span>${badge}</div></td>
+            <td>${tableMetricHtml(row.sp_product_gmv, previous.sp_product_gmv, money)}</td>
+            <td>${tableMetricHtml(row.gmv_share, previous.gmv_share, ratio)}</td>
+            <td>${advertised ? tableMetricHtml(row.spend_rmb, previous.spend_rmb, money, { neutral: true }) : unavailable}</td>
+            <td>${advertised ? tableMetricHtml(row.spend_share, previous.spend_share, ratio, { neutral: true }) : unavailable}</td>
+            <td>${advertised ? tableMetricHtml(row.purchase_value_rmb, previous.purchase_value_rmb, money) : unavailable}</td>
+            <td>${advertised ? tableMetricHtml(row.roas, previous.roas, roas) : unavailable}</td>
+            <td>${advertised ? tableMetricHtml(row.impressions, previous.impressions, value => fmt0.format(n(value))) : unavailable}</td>
+            <td>${advertised ? tableMetricHtml(row.clicks, previous.clicks, value => fmt0.format(n(value))) : unavailable}</td>
+            <td>${advertised ? tableMetricHtml(row.add_to_cart, previous.add_to_cart, value => fmt0.format(n(value))) : unavailable}</td>
+            <td>${advertised ? tableMetricHtml(row.conversions, previous.conversions, value => fmt0.format(n(value))) : unavailable}</td>
+          </tr>
+        `;
+      }).join('');
       byId('offsiteProductTable').innerHTML = `
         <table class="offsite-product-table">
           <thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>
           <tbody>
-            ${rows.map(row => {
-              const previous = compareByProduct.get(`${row.category || '-'}||${row.product || '-'}`) || {};
-              const spProductGmv = lookupSpProductGmv(row, spGmvLookup);
-              const previousSpProductGmv = lookupSpProductGmv(row, compareSpGmvLookup);
-              const spProductGmvShare = spProductGmvTotal ? spProductGmv / spProductGmvTotal : null;
-              const previousSpProductGmvShare = compareSpProductGmvTotal ? previousSpProductGmv / compareSpProductGmvTotal : null;
-              return `
-                <tr>
-                  <td><div class="product-cell">${escapeHtml(row.product)}</div></td>
-                  <td>${tableMetricHtml(spProductGmv, previousSpProductGmv, money)}</td>
-                  <td>${tableMetricHtml(spProductGmvShare, previousSpProductGmvShare, ratio)}</td>
-                  <td>${tableMetricHtml(row.spend_rmb, previous.spend_rmb, money, { neutral: true })}</td>
-                  <td>${tableMetricHtml(row.spend_share, previous.spend_share, ratio, { neutral: true })}</td>
-                  <td>${tableMetricHtml(row.purchase_value_rmb, previous.purchase_value_rmb, money)}</td>
-                  <td>${tableMetricHtml(row.roas, previous.roas, roas)}</td>
-                  <td>${tableMetricHtml(row.impressions, previous.impressions, value => fmt0.format(n(value)))}</td>
-                  <td>${tableMetricHtml(row.clicks, previous.clicks, value => fmt0.format(n(value)))}</td>
-                  <td>${tableMetricHtml(row.add_to_cart, previous.add_to_cart, value => fmt0.format(n(value)))}</td>
-                  <td>${tableMetricHtml(row.conversions, previous.conversions, value => fmt0.format(n(value)))}</td>
-                </tr>
-              `;
-            }).join('')}
+            ${advertisedRows.length ? `<tr class="offsite-product-group-row"><td colspan="11"><strong>已投放产品</strong><span>来自品类表 T 列 · ${advertisedRows.length} 个</span></td></tr>${renderRows(advertisedRows, 'advertised')}` : ''}
+            ${unadvertisedRows.length ? `<tr class="offsite-product-group-row unadvertised"><td colspan="11"><strong>未投放产品</strong><span>站内有经营数据但未命中品类表 T 列 · ${unadvertisedRows.length} 个</span></td></tr>${renderRows(unadvertisedRows, 'unadvertised')}` : ''}
           </tbody>
         </table>
       `;
@@ -3703,7 +4015,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </section>
       `;
     }
-    function renderOffsiteActionSignals(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows, period) {
+    function renderOffsiteActionSignals(offsiteProductRows, compareOffsiteProductRows, period) {
       const target = byId('offsiteActionSignals');
       if (!target) return;
       if (period?.invalid) {
@@ -3711,7 +4023,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         return;
       }
       const reduceSpendThreshold = 0.10;
-      const actionRows = buildOffsiteActionRows(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows);
+      const actionRows = buildOffsiteActionRows(offsiteProductRows, compareOffsiteProductRows);
       const comparableRows = actionRows.filter(row => row.hasComparableBase);
       const reduceRows = comparableRows
         .filter(row => row.spendChange >= reduceSpendThreshold && row.spGmvChange < 0)
@@ -3848,6 +4160,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const compareOffsiteProductRows = selectedOffsiteProductRows(period, 'compare');
       const productRows = selectedProductRows(period);
       const compareProductRows = selectedProductRows(period, 'compare');
+      const offsiteProductView = buildOffsiteProductView(
+        offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows,
+      );
       const trendRows = selectedTrendRows(period);
       const compareTrendRows = selectedTrendRows(period, 'compare');
       renderMetrics(rows, compare);
@@ -3861,8 +4176,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       renderInsights(rows, compare, categoryRows, offsiteProductRows, period);
       renderCategoryTable(categoryRows, compareCategoryRows);
       renderProductTable(productRows, compareProductRows);
-      renderOffsiteProductTable(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows);
-      renderOffsiteActionSignals(offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows, period);
+      renderOffsiteProductTable(offsiteProductView.current, offsiteProductView.compare);
+      renderOffsiteActionSignals(offsiteProductView.current, offsiteProductView.compare, period);
       renderDailyTable(rows);
       renderFieldTable();
     }
@@ -4112,6 +4427,9 @@ def validate_report_html(html: str) -> None:
     required_fragments = (
         '<table class="offsite-product-table">',
         '<thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>',
+        "function buildOffsiteProductView",
+        "T列投放产品",
+        "未投放产品",
         'id="offsiteActionSignals"',
         "function renderOffsiteActionSignals",
         'id="refreshReport"',
@@ -4132,6 +4450,7 @@ def validate_report_html(html: str) -> None:
         "<th>Purchase Value RMB</th>",
         "<th>平均汇率</th>",
         "<th>归因品类</th><th>SP商品GMV</th>",
+        "function lookupSpProductGmv",
         '"metric": "GMV(Customer Payment)"',
     )
     missing = [fragment for fragment in required_fragments if fragment not in html]
