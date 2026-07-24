@@ -27,6 +27,7 @@ from build_skt_alignment import (
     read_csv,
     resolve_categories,
 )
+from build_skt_material_snapshots import ensure_material_snapshots
 
 
 DMS_DIR = ROOT / "data" / "dms"
@@ -382,6 +383,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
   <title>SKT 新加坡全品类素材分析</title>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
   <style>
@@ -972,8 +974,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function materialMedia(row) {
       const url = String(row.preview_url || row.play_url || '').trim();
-      if (url && isVideoUrl(url)) return `<video controls muted preload="metadata" src="${escapeHtml(url)}"></video>`;
-      if (url && isImageUrl(url)) return `<img src="${escapeHtml(url)}" alt="${escapeHtml(row.material_name || row.material_id || '素材预览')}">`;
+      const snapshotUrl = String(row.snapshot_url || '').trim();
+      const alt = escapeHtml(row.material_name || row.material_id || '素材预览');
+      if (snapshotUrl) return `<img class="material-preview" src="${escapeHtml(snapshotUrl)}" data-fallback-url="${escapeHtml(url)}" alt="${alt}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
+      if (url && isVideoUrl(url)) return `<video class="material-preview" controls muted preload="metadata" src="${escapeHtml(url)}"></video>`;
+      if (url && isImageUrl(url)) return `<img class="material-preview" src="${escapeHtml(url)}" alt="${alt}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
       if (url) return `<span class="media-placeholder"><b>已抓到素材链接</b><small>点击下方打开</small></span>`;
       return `<span class="media-placeholder"><b>${escapeHtml(row.material_type || '素材预览')}</b><small>暂无可嵌入预览，可复制编号到DMS查询</small></span>`;
     }
@@ -1180,6 +1185,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         setTimeout(() => { button.textContent = '复制编号'; }, 1200);
       } catch (error) {}
     });
+    byId('dmsBoard').addEventListener('error', event => {
+      const media = event.target.closest('.material-preview');
+      if (!media) return;
+      const fallbackUrl = String(media.dataset.fallbackUrl || '').trim();
+      if (fallbackUrl && !media.dataset.fallbackUsed && isImageUrl(fallbackUrl)) {
+        media.dataset.fallbackUsed = '1';
+        media.removeAttribute('data-fallback-url');
+        media.src = fallbackUrl;
+        return;
+      }
+      const container = media.closest('.dms-media');
+      media.remove();
+      if (container && !container.querySelector('.media-placeholder')) {
+        container.insertAdjacentHTML('beforeend', '<span class="media-placeholder"><b>预览暂不可用</b><small>可点击下方“打开素材”查看原文件</small></span>');
+      }
+    }, true);
     setupFilters();
     setupSideNav();
     renderAll();
@@ -1198,6 +1219,7 @@ def run() -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     SITE_DIR.mkdir(parents=True, exist_ok=True)
     payload = build_payload()
+    ensure_material_snapshots(payload, SITE_DIR)
     html = build_html(payload)
     output_path = OUTPUT_DIR / "skt_material_analysis.html"
     site_path = SITE_DIR / "skt-material-analysis.html"

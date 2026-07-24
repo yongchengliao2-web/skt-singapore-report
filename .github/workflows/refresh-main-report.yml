@@ -39,11 +39,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Preserve current material page
+      - name: Preserve current material page and snapshots
         run: >-
           python scripts/download_protected_assets.py
           --base-url "$LIVE_URL"
           --asset "/skt-material-analysis=.preserved/skt-material-analysis.html"
+          --snapshot-html ".preserved/skt-material-analysis.html"
+          --snapshot-output-root ".preserved"
+          --workers 12
+          --minimum-success-rate 0.8
 
       - name: Build main report from Google Sheet
         run: python pipelines/build_skt_alignment.py
@@ -52,11 +56,15 @@ jobs:
         shell: bash
         run: |
           cp .preserved/skt-material-analysis.html site/skt-material-analysis.html
+          mkdir -p site/assets
+          cp -a .preserved/assets/. site/assets/
           test -s site/index.html
           test -s site/skt-onsite-offsite-alignment.html
           test -s site/skt-material-analysis.html
+          test "$(find site/assets/material_snapshots -type f -name '*.jpg' | wc -l)" -gt 0
           grep -q 'id="refreshReport"' site/index.html
           grep -q 'PAGE_DATA' site/skt-material-analysis.html
+          grep -q '"snapshot_url":"/assets/material_snapshots/' site/skt-material-analysis.html
 
       - name: Prepare Cloudflare Pages bundle
         shell: bash

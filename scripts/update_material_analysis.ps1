@@ -11,6 +11,16 @@ $Python = if (Test-Path $BundledPython) { $BundledPython } else { "python" }
 
 Push-Location $ProjectRoot
 try {
+  & $Python -c "import PIL, imageio_ffmpeg" 2>$null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Installing material snapshot dependencies..."
+    & $Python -m pip install --disable-pip-version-check --quiet `
+      --requirement "pipelines\requirements-material-snapshots.txt"
+    if ($LASTEXITCODE -ne 0) {
+      throw "Material snapshot dependency installation failed with exit code $LASTEXITCODE"
+    }
+  }
+
   if ($FetchDms) {
     Write-Host "Refreshing SKT DMS material cache..."
     & $Python "pipelines\fetch_skt_dms_materials.py"

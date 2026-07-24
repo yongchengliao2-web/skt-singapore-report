@@ -25,8 +25,9 @@ try {
     }
   }
 
-  Write-Host "Building SKT material analysis page..."
-  & $Python "pipelines\build_skt_material_analysis.py"
+  Write-Host "Building SKT material analysis page and snapshots..."
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+    -File (Join-Path $PSScriptRoot "update_material_analysis.ps1")
   if ($LASTEXITCODE -ne 0) {
     throw "Material analysis build failed with exit code $LASTEXITCODE"
   }
