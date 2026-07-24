@@ -2336,6 +2336,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <a href="#category-detail">品类明细</a>
         <a href="#product-drilldown">产品明细</a>
         <a href="#offsite-product-detail">站外产品</a>
+        <a href="skt-material-analysis.html">素材分析</a>
         <a href="#daily-detail">日明细</a>
         <a href="#field-contract">字段口径</a>
       </div>
@@ -4106,6 +4107,7 @@ def validate_report_html(html: str) -> None:
         'id="offsiteSpendCompareChart"',
         "function renderPeriodComparisonCharts",
         "GMV(After Seller Discounts)（I列）",
+        '<a href="skt-material-analysis.html">素材分析</a>',
     )
     forbidden_fragments = (
         "<th>Purchase Value RMB</th>",
