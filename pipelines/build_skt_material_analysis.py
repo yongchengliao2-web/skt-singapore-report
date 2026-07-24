@@ -48,6 +48,12 @@ def first_url(*values: Any) -> str:
     return ""
 
 
+def link_snapshot_mode(snapshot_mode: Any, material_source: Any, post_url: Any) -> str:
+    mode = clean_text(snapshot_mode).casefold()
+    source = clean_text(material_source).casefold()
+    return "link" if mode == "link" or "kol" in source or clean_text(post_url) else "media"
+
+
 def material_code(*values: Any) -> str:
     for value in values:
         match = MATERIAL_CODE_RE.search(str(value or ""))
@@ -117,6 +123,8 @@ DAILY_PAYLOAD_FIELDS = (
     "category",
     "categories",
     "material_type",
+    "material_source",
+    "snapshot_mode",
     "post_url",
     "preview_url",
     "play_url",
@@ -167,6 +175,13 @@ def load_dms_rows(category_ref: dict[str, Any]) -> tuple[dict[str, dict[str, Any
             product = clean_text(raw.get("product") or raw.get("产品"))
             name = clean_text(raw.get("material_name") or raw.get("素材名称"))
             categories = resolve_categories(category_ref, product, name)
+            material_source = clean_text(raw.get("material_source") or raw.get("素材来源")) or "DMS"
+            post_url = clean_text(raw.get("post_url") or raw.get("帖子链接") or raw.get("Post URL"))
+            preview_url = clean_text(raw.get("preview_url") or raw.get("预览链接"))
+            play_url = clean_text(raw.get("play_url") or raw.get("播放链接"))
+            snapshot_mode = link_snapshot_mode(raw.get("snapshot_mode"), material_source, post_url)
+            if snapshot_mode == "link" and not post_url:
+                post_url = first_url(preview_url, play_url)
             item = {
                 "material_id": code,
                 "material_key": code or fallback_material_key(product, name),
@@ -175,14 +190,15 @@ def load_dms_rows(category_ref: dict[str, Any]) -> tuple[dict[str, dict[str, Any
                 "category": " / ".join(categories),
                 "categories": categories,
                 "material_type": normalize_material_type(raw.get("material_type") or raw.get("素材类型"), name),
-                "material_source": clean_text(raw.get("material_source") or raw.get("素材来源")) or "DMS",
+                "material_source": material_source,
                 "status": clean_text(raw.get("status") or raw.get("投放状态")),
                 "ad_count": parse_number(raw.get("ad_count") or raw.get("广告数量")),
                 "linked_ad_count": parse_number(raw.get("linked_ad_count") or raw.get("关联广告ID数")),
                 "created_at": clean_text(raw.get("created_at") or raw.get("创建时间")),
-                "post_url": clean_text(raw.get("post_url") or raw.get("帖子链接") or raw.get("Post URL")),
-                "preview_url": clean_text(raw.get("preview_url") or raw.get("预览链接")),
-                "play_url": clean_text(raw.get("play_url") or raw.get("播放链接")),
+                "post_url": post_url,
+                "preview_url": preview_url,
+                "play_url": play_url,
+                "snapshot_mode": snapshot_mode,
                 "file_type": clean_text(raw.get("file_type") or raw.get("文件类型")),
                 "file_size_mb": parse_number(raw.get("file_size_mb") or raw.get("文件大小MB")),
                 "source": "DMS",
@@ -234,6 +250,9 @@ def build_offsite_materials(path: Path, category_ref: dict[str, Any], dms_lookup
         material_type = normalize_material_type(dms.get("material_type"), get_value(row, "广告类型"), ad_name)
         preview_url = dms.get("preview_url") or dms.get("play_url") or first_url(ad_name, campaign_name)
         post_url = dms.get("post_url") or first_url(get_value(row, "帖子链接"), get_value(row, "Post URL"))
+        snapshot_mode = link_snapshot_mode(dms.get("snapshot_mode"), dms.get("material_source"), post_url)
+        if snapshot_mode == "link" and not post_url:
+            post_url = first_url(preview_url, dms.get("play_url"))
         meta = material_meta.setdefault(
             key,
             {
@@ -252,6 +271,7 @@ def build_offsite_materials(path: Path, category_ref: dict[str, Any], dms_lookup
                 "post_url": post_url,
                 "preview_url": preview_url,
                 "play_url": dms.get("play_url", ""),
+                "snapshot_mode": snapshot_mode,
                 "material_source": dms.get("material_source") or "站外数据源",
                 "status": dms.get("status", ""),
                 "created_at": dms.get("created_at", ""),
@@ -322,6 +342,8 @@ def summarize_source(daily_rows: list[dict[str, Any]], material_rows: list[dict[
         "offsite_daily_rows": len(daily_rows),
         "active_materials": len(material_rows),
         "dms_materials": len(dms_rows),
+        "linked_materials": sum(1 for row in dms_rows if row.get("snapshot_mode") == "link" and row.get("post_url")),
+        "linked_materials_missing_url": sum(1 for row in dms_rows if row.get("snapshot_mode") == "link" and not row.get("post_url")),
         "dms_source_csv": Path(dms_path).name if dms_path else "",
         "total_spend_rmb": total["spend_rmb"],
         "total_purchase_value_rmb": total["purchase_value_rmb"],
@@ -456,10 +478,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .dms-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 12px; }
     .dms-card { display: grid; grid-template-rows: auto 1fr; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
     .dms-media { position: relative; aspect-ratio: 16 / 10; background: #10241e; overflow: hidden; }
+    .dms-media.is-link { background: #edf6f2; }
     .dms-media img, .dms-media video { width: 100%; height: 100%; object-fit: cover; display: block; background: #10241e; }
     .media-placeholder { width: 100%; height: 100%; display: grid; place-items: center; padding: 18px; color: #d8eee7; text-align: center; font-weight: 900; }
     .media-placeholder small { display: block; margin-top: 6px; color: rgba(216,238,231,.75); font-weight: 700; }
-    .dms-pills { position: absolute; top: 8px; left: 8px; right: 8px; z-index: 1; display: flex; gap: 5px; flex-wrap: wrap; }
+    .dms-media.is-link .media-placeholder { color: var(--muted); }
+    .dms-media.is-link .media-placeholder small { color: var(--muted); }
+    .external-post-preview { width: 100%; height: 100%; display: grid; place-content: center; gap: 7px; padding: 52px 20px 20px; background: #edf6f2; color: var(--accent); text-align: center; text-decoration: none; transition: background 150ms ease, color 150ms ease; }
+    .external-post-preview:hover { background: #e2f0ea; color: #0d5742; }
+    .external-post-preview b { font-size: 17px; font-weight: 950; }
+    .external-post-preview small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-weight: 800; }
+    .dms-pills { position: absolute; top: 8px; left: 8px; right: 8px; z-index: 1; display: flex; gap: 5px; flex-wrap: wrap; pointer-events: none; }
     .dms-pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border-radius: 8px; background: rgba(255,255,255,.9); color: var(--ink); font-size: 11px; font-weight: 900; }
     .dms-body { display: grid; gap: 9px; padding: 12px; min-width: 0; align-content: start; }
     .dms-name { margin: 0; font-size: 14px; line-height: 1.28; font-weight: 950; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -990,7 +1019,35 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function isImageUrl(url) {
       return /\\.(png|jpe?g|webp|gif)(\\?|#|$)/i.test(String(url || ''));
     }
+    function isExternalUrl(url) {
+      return /^https?:\\/\\/[^\\s]+$/i.test(String(url || '').trim());
+    }
+    function isLinkMaterial(row) {
+      const mode = String(row.snapshot_mode || '').trim().toLowerCase();
+      const source = String(row.material_source || row.source || '').trim().toLowerCase();
+      return mode === 'link' || source.includes('kol') || isExternalUrl(row.post_url);
+    }
+    function materialExternalUrl(row) {
+      const candidates = [row.post_url];
+      if (isLinkMaterial(row)) candidates.push(row.preview_url, row.play_url);
+      return candidates.map(value => String(value || '').trim()).find(isExternalUrl) || '';
+    }
+    function materialExternalLabel(row) {
+      const source = String(row.material_source || row.source || '').toLowerCase();
+      return source.includes('kol') ? '打开KOL帖子' : '打开帖子';
+    }
+    function materialExternalHost(url) {
+      try { return new URL(url).hostname.replace(/^www\\./i, ''); } catch (error) { return '原始链接'; }
+    }
     function materialMedia(row) {
+      if (isLinkMaterial(row)) {
+        const externalUrl = materialExternalUrl(row);
+        if (externalUrl) {
+          const label = materialExternalLabel(row);
+          return `<a class="external-post-preview" href="${escapeHtml(externalUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${label}" title="${escapeHtml(externalUrl)}"><b>${label}</b><small>${escapeHtml(materialExternalHost(externalUrl))}</small></a>`;
+        }
+        return `<span class="media-placeholder"><b>${escapeHtml(row.material_type || '帖子素材')}</b><small>暂无可用原始链接</small></span>`;
+      }
       const url = String(row.preview_url || row.play_url || '').trim();
       const snapshotUrl = String(row.snapshot_url || '').trim();
       const alt = escapeHtml(row.material_name || row.material_id || '素材预览');
@@ -1001,6 +1058,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       return `<span class="media-placeholder"><b>${escapeHtml(row.material_type || '素材预览')}</b><small>暂无可嵌入预览，可复制编号到DMS查询</small></span>`;
     }
     function materialLinks(row) {
+      if (isLinkMaterial(row)) {
+        const externalUrl = materialExternalUrl(row);
+        return externalUrl ? [{ url: externalUrl, label: materialExternalLabel(row), primary: true }] : [];
+      }
       const postUrl = String(row.post_url || '').trim();
       const materialUrl = String(row.preview_url || row.play_url || '').trim();
       const links = [];
@@ -1010,10 +1071,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function dmsCard(row) {
       const title = row.material_name || row.material_id || row.ad_name || '未命名素材';
-      const actions = materialLinks(row).map(item => `<a class="${item.primary ? 'primary-link' : ''}" href="${escapeHtml(item.url)}" target="_blank" rel="noopener" title="${escapeHtml(item.url)}">${item.label}</a>`);
+      const linkMode = isLinkMaterial(row);
+      const actions = materialLinks(row).map(item => `<a class="${item.primary ? 'primary-link' : ''}" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(item.url)}">${item.label}</a>`);
       if (row.material_id) actions.push(`<button type="button" class="copy-material-code" data-code="${escapeHtml(row.material_id)}">复制编号</button>`);
       return `<article class="dms-card">
-        <div class="dms-media">
+        <div class="dms-media ${linkMode ? 'is-link' : ''}">
           <div class="dms-pills">
             <span class="dms-pill">${escapeHtml(row.material_type || '未标记')}</span>
             <span class="dms-pill">${escapeHtml(row.source || '素材')}</span>
@@ -1075,7 +1137,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       byId('materialTable').innerHTML = tableHtml(['素材', '产品', '品类', '类型', '链接', '花费RMB', '花费USD', 'GMV/PV RMB', 'ROAS', '转化', '点击', 'CTR', 'CVR'], rows.slice(0, 180), row => {
         const links = materialLinks(row);
         const linkHtml = links.length
-          ? `<span class="table-links">${links.map(item => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" title="${escapeHtml(item.url)}">${item.label.replace('打开', '')}</a>`).join('')}</span>`
+          ? `<span class="table-links">${links.map(item => `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(item.url)}">${item.label.replace('打开', '')}</a>`).join('')}</span>`
           : '<span class="muted">-</span>';
         return `
         <tr>

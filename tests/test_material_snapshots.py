@@ -8,12 +8,49 @@ from PIL import Image
 from pipelines.build_skt_material_snapshots import (
     SNAPSHOT_RELATIVE_DIR,
     ensure_material_snapshots,
+    is_link_material,
+    material_source_url,
     snapshot_filename,
 )
 from scripts.download_protected_assets import download_assets, referenced_snapshots
 
 
 class MaterialSnapshotTests(unittest.TestCase):
+    def test_kol_and_post_links_never_create_snapshots(self) -> None:
+        source_url = "https://cdn.example.com/material/kol-preview.jpg"
+        row = {
+            "material_id": "KOL123456",
+            "material_key": "KOL123456",
+            "material_source": "KOL素材",
+            "snapshot_mode": "link",
+            "post_url": "https://www.instagram.com/p/example/",
+            "preview_url": source_url,
+            "snapshot_url": "/assets/material_snapshots/old.jpg",
+            "material_type": "图片",
+        }
+        payload = {"material_rows": [row], "library_rows": []}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            site_dir = Path(temp_dir)
+            stale = site_dir / SNAPSHOT_RELATIVE_DIR / snapshot_filename(row, source_url)
+            stale.parent.mkdir(parents=True)
+            Image.new("RGB", (40, 40), "black").save(stale, "JPEG", quality=90)
+
+            with patch("pipelines.build_skt_material_snapshots.download_image_snapshot") as image_download, patch(
+                "pipelines.build_skt_material_snapshots.download_video_snapshot"
+            ) as video_download:
+                stats = ensure_material_snapshots(payload, site_dir)
+
+            self.assertTrue(is_link_material(row))
+            self.assertEqual(material_source_url(row), "")
+            self.assertNotIn("snapshot_url", row)
+            self.assertEqual(stats["linked"], 1)
+            self.assertEqual(stats["referenced"], 0)
+            self.assertEqual(stats["pruned"], 1)
+            self.assertFalse(stale.exists())
+            image_download.assert_not_called()
+            video_download.assert_not_called()
+
     def test_existing_snapshot_is_attached_to_every_matching_row(self) -> None:
         source_url = "https://cdn.example.com/material/example.jpg"
         first_row = {

@@ -25,6 +25,12 @@ class ReportLayoutTests(unittest.TestCase):
         for template in (MAIN_REPORT_TEMPLATE, MATERIAL_REPORT_TEMPLATE):
             self.assertIn(media_rule, template)
 
+    def test_kol_materials_render_as_direct_external_links(self) -> None:
+        self.assertIn("function materialExternalUrl(row)", MATERIAL_REPORT_TEMPLATE)
+        self.assertIn("if (isLinkMaterial(row))", MATERIAL_REPORT_TEMPLATE)
+        self.assertIn('class="external-post-preview"', MATERIAL_REPORT_TEMPLATE)
+        self.assertIn('rel="noopener noreferrer"', MATERIAL_REPORT_TEMPLATE)
+
 
 if __name__ == "__main__":
     unittest.main()

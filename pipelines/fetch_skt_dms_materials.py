@@ -200,9 +200,25 @@ def ig_ids(value: Any) -> list[str]:
     return [part.strip() for part in text.replace(";", ",").split(",") if part.strip()]
 
 
-def request_page(token: str, page_no: int, *, host: str, country: str, page_size: int) -> tuple[list[dict[str, Any]], int]:
+def request_page(
+    token: str,
+    page_no: int,
+    *,
+    host: str,
+    country: str,
+    page_size: int,
+    data_from_types: tuple[int, ...] = (),
+) -> tuple[list[dict[str, Any]], int]:
     url = host.rstrip("/") + "/api/admin-api/igad/advertisement/allPage"
-    payload = json.dumps({"pageNo": page_no, "pageSize": page_size}).encode("utf-8")
+    payload_data: dict[str, Any] = {"pageNo": page_no, "pageSize": page_size}
+    if data_from_types:
+        payload_data["dataFromType"] = {
+            "conditionType": "IN",
+            "relationType": "enum",
+            "relationValue": "21",
+            "value": list(data_from_types),
+        }
+    payload = json.dumps(payload_data).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {token}",
         "corp": env_first("SKT_DMS_CORP", default="fm"),
@@ -234,17 +250,55 @@ def request_page(token: str, page_no: int, *, host: str, country: str, page_size
     return data.get("list") or [], int(data.get("total") or 0)
 
 
-def fetch_rows(token: str, *, host: str, country: str, page_size: int, max_pages: int = 0) -> tuple[list[dict[str, Any]], int]:
-    first_rows, total = request_page(token, 1, host=host, country=country, page_size=page_size)
+def fetch_rows(
+    token: str,
+    *,
+    host: str,
+    country: str,
+    page_size: int,
+    max_pages: int = 0,
+    data_from_types: tuple[int, ...] = (),
+) -> tuple[list[dict[str, Any]], int]:
+    first_rows, total = request_page(
+        token,
+        1,
+        host=host,
+        country=country,
+        page_size=page_size,
+        data_from_types=data_from_types,
+    )
     rows = list(first_rows)
     page_count = max(1, (total + page_size - 1) // page_size)
     if max_pages > 0:
         page_count = min(page_count, max_pages)
     for page_no in range(2, page_count + 1):
-        page_rows, _ = request_page(token, page_no, host=host, country=country, page_size=page_size)
+        page_rows, _ = request_page(
+            token,
+            page_no,
+            host=host,
+            country=country,
+            page_size=page_size,
+            data_from_types=data_from_types,
+        )
         rows.extend(page_rows)
         time.sleep(0.08)
     return rows, total
+
+
+def merge_source_rows(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for rows in groups:
+        for row in rows:
+            identity = str(row.get("materialCode") or row.get("id") or "").strip()
+            if not identity:
+                identity = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+            if identity not in merged:
+                order.append(identity)
+            # KOL rows are merged last so their post URL semantics win when DMS
+            # returns the same material in both the unfiltered and KOL result sets.
+            merged[identity] = row
+    return [merged[identity] for identity in order]
 
 
 def choose_extension(record: dict[str, Any]) -> str:
@@ -258,10 +312,24 @@ def choose_extension(record: dict[str, Any]) -> str:
 
 def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     file = pick_file(row)
-    preview_url = norm_url(file.get("fullUrlWithHttps") or file.get("fullUrl") or file.get("url") or row.get("url"))
+    data_from_type = as_int(row.get("dataFromType"))
+    material_source = SOURCE_MAP.get(data_from_type, f"dataFromType={row.get('dataFromType')}")
+    is_kol = data_from_type == 4 or "kol" in str(row.get("dataFromTypeName") or "").casefold()
+    if is_kol:
+        material_source = SOURCE_MAP[4]
+    preview_url = norm_url(
+        file.get("fullUrlWithHttps")
+        or file.get("fullUrl")
+        or file.get("url")
+        or row.get("previewUrl")
+        or row.get("coverUrl")
+        or row.get("videoUrl")
+        or ("" if is_kol else row.get("url"))
+    )
     play_url = norm_url(file.get("fullPlayUrl") or file.get("playUrl"))
     ids = ig_ids(row.get("igAdIds"))
     post_url = first_external_url(
+        row.get("url") if is_kol else "",
         row.get("channelUrls"),
         row.get("channelUrlsStr"),
         row.get("networkDiskLink"),
@@ -272,12 +340,14 @@ def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
         row.get("publishUrl"),
         row.get("shareUrl"),
     )
+    if is_kol and not post_url:
+        post_url = first_external_url(preview_url, play_url)
     return {
         "product": product_name(row),
         "material_id": str(row.get("materialCode") or "").strip(),
         "material_name": str(row.get("materialName") or "").strip(),
         "material_type": material_type(row, file),
-        "material_source": SOURCE_MAP.get(row.get("dataFromType"), f"dataFromType={row.get('dataFromType')}"),
+        "material_source": material_source,
         "status": str(row.get("status") or "").strip(),
         "ad_count": as_int(row.get("adCount")),
         "linked_ad_count": len(ids),
@@ -287,6 +357,7 @@ def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
         "post_url": post_url,
         "preview_url": preview_url,
         "play_url": play_url,
+        "snapshot_mode": "link" if is_kol or post_url else "media",
         "file_type": str(file.get("mimeType") or file.get("suffix") or "").strip(),
         "file_size_mb": file_size_mb(file),
         "material_row_id": str(row.get("id") or "").strip(),
@@ -314,17 +385,38 @@ def run(max_pages: int = 0) -> dict[str, Any]:
 
     DMS_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
-    total = 0
+    normal_total = 0
+    kol_total = 0
     used_source = ""
     failures: list[str] = []
     for source, token in sources:
         try:
-            rows, total = fetch_rows(token, host=host, country=country, page_size=page_size, max_pages=max_pages)
-            used_source = source
-            if total or rows:
-                break
+            normal_rows, normal_total = fetch_rows(
+                token,
+                host=host,
+                country=country,
+                page_size=page_size,
+                max_pages=max_pages,
+            )
         except Exception as exc:
-            failures.append(f"{source}: {str(exc).splitlines()[0][:160]}")
+            failures.append(f"{source} normal: {str(exc).splitlines()[0][:160]}")
+            continue
+        try:
+            kol_rows, kol_total = fetch_rows(
+                token,
+                host=host,
+                country=country,
+                page_size=page_size,
+                max_pages=max_pages,
+                data_from_types=(4,),
+            )
+        except Exception as exc:
+            failures.append(f"{source} KOL: {str(exc).splitlines()[0][:160]}")
+            continue
+        if normal_rows or kol_rows or normal_total or kol_total:
+            rows = merge_source_rows(normal_rows, kol_rows)
+            used_source = source
+            break
     if not used_source:
         detail = "; ".join(failures[:5])
         raise RuntimeError(f"DMS refresh failed for all configured token sources. {detail}")
@@ -348,6 +440,7 @@ def run(max_pages: int = 0) -> dict[str, Any]:
         "post_url",
         "preview_url",
         "play_url",
+        "snapshot_mode",
         "file_type",
         "file_size_mb",
         "material_row_id",
@@ -361,7 +454,10 @@ def run(max_pages: int = 0) -> dict[str, Any]:
     summary = {
         "run_at": datetime.now().isoformat(timespec="seconds"),
         "country": country,
-        "api_total": total,
+        "api_total": len(rows),
+        "normal_api_total": normal_total,
+        "kol_api_total": kol_total,
+        "kol_rows": sum(1 for row in normalized if row.get("material_source") == SOURCE_MAP[4]),
         "rows": len(rows),
         "token_source": used_source,
         "csv": str(csv_path),

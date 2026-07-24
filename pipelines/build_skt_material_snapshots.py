@@ -26,7 +26,16 @@ MIN_SNAPSHOT_BYTES = 512
 MAX_SNAPSHOT_SIZE = (960, 720)
 
 
+def is_link_material(row: dict[str, Any]) -> bool:
+    mode = str(row.get("snapshot_mode") or "").strip().casefold()
+    source = str(row.get("material_source") or row.get("source") or "").strip().casefold()
+    post_url = str(row.get("post_url") or "").strip()
+    return mode == "link" or "kol" in source or bool(post_url)
+
+
 def material_source_url(row: dict[str, Any]) -> str:
+    if is_link_material(row):
+        return ""
     for key in ("preview_url", "play_url"):
         value = str(row.get(key) or "").strip()
         parsed = urlparse(value)
@@ -198,7 +207,12 @@ def ensure_material_snapshots(payload: dict[str, Any], site_dir: Path) -> dict[s
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     jobs: dict[str, dict[str, Any]] = {}
+    linked_keys: set[str] = set()
     for row in rows:
+        if is_link_material(row):
+            row.pop("snapshot_url", None)
+            linked_keys.add(str(row.get("material_key") or row.get("material_id") or id(row)))
+            continue
         source_url = material_source_url(row)
         if not source_url:
             row.pop("snapshot_url", None)
@@ -219,7 +233,14 @@ def ensure_material_snapshots(payload: dict[str, Any], site_dir: Path) -> dict[s
         job["rows"].append(row)
         job["web_path"] = web_path
 
-    stats = {"referenced": len(jobs), "cached": 0, "created": 0, "failed": 0, "pruned": 0}
+    stats = {
+        "referenced": len(jobs),
+        "linked": len(linked_keys),
+        "cached": 0,
+        "created": 0,
+        "failed": 0,
+        "pruned": 0,
+    }
     pending_images: list[dict[str, Any]] = []
     pending_videos: list[dict[str, Any]] = []
     failures: list[tuple[str, str]] = []
@@ -277,7 +298,7 @@ def ensure_material_snapshots(payload: dict[str, Any], site_dir: Path) -> dict[s
     stats["failed"] = len(failures)
     print(
         "Material snapshots: "
-        f"{stats['created']} created, {stats['cached']} cached, "
+        f"{stats['linked']} linked, {stats['created']} created, {stats['cached']} cached, "
         f"{stats['failed']} failed, {stats['pruned']} stale removed."
     )
     for label, message in failures[:10]:
