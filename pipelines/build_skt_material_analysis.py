@@ -493,6 +493,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .side-nav.is-collapsed .side-nav-head { justify-content: center; }
     .side-nav.is-collapsed strong, .side-nav.is-collapsed .side-nav-links { display: none; }
     .side-nav.is-collapsed .side-nav-icon { transform: rotate(180deg) translateY(1px); }
+    @media (min-width: 1700px) {
+      .page,
+      .topbar-inner {
+        --report-rail-width: 176px;
+        --report-balanced-width: min(1580px, calc(100vw - 272px));
+        width: var(--report-balanced-width);
+        margin-left: calc((100vw - var(--report-rail-width) - var(--report-balanced-width)) / 2);
+        margin-right: auto;
+      }
+      body.side-nav-collapsed .page,
+      body.side-nav-collapsed .topbar-inner {
+        --report-rail-width: 60px;
+        --report-balanced-width: min(1580px, calc(100vw - 156px));
+      }
+    }
+    @media (min-width: 1181px) and (max-width: 1699px) {
+      .side-nav { display: none; }
+    }
     .empty { padding: 30px; color: var(--muted); text-align: center; font-weight: 850; }
     @media (max-width: 1320px) {
       .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1149,6 +1167,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       if (!nav || !toggle) return;
       const setCollapsed = collapsed => {
         nav.classList.toggle('is-collapsed', collapsed);
+        document.body.classList.toggle('side-nav-collapsed', collapsed);
         toggle.setAttribute('aria-expanded', String(!collapsed));
         toggle.setAttribute('aria-label', collapsed ? '展开导航' : '收起导航');
         toggle.title = collapsed ? '展开导航' : '收起导航';
