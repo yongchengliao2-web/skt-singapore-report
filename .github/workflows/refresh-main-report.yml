@@ -1,5 +1,5 @@
 name: Refresh SKT main report
-run-name: "SKT refresh ${{ github.event_name == 'schedule' && 'daily-10:45' || inputs.request_id }}"
+run-name: "SKT refresh ${{ github.event_name == 'schedule' && 'weekday-10:45' || inputs.request_id }}"
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
         default: manual
         type: string
   schedule:
-    - cron: "45 2 * * *"
+    - cron: "45 2 * * 1-5"
 
 permissions:
   contents: read
