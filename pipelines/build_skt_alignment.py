@@ -5,6 +5,7 @@ import csv
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -101,8 +102,11 @@ def ensure_source_csvs() -> dict[str, Path]:
         try:
             _download_sheet(config["sheet"], target)
             downloaded = True
-        except Exception:
-            pass
+        except Exception as exc:
+            message = f"Google Sheet download failed for {config['sheet']}: {type(exc).__name__}: {str(exc).splitlines()[0][:180]}"
+            if os.environ.get("CI", "").casefold() == "true":
+                raise RuntimeError(message) from exc
+            print(f"WARNING: {message}; using the latest local source if available.", file=sys.stderr)
 
         if key == "offsite":
             resolved[key] = resolve_offsite_source(target, config, prefer_target=downloaded)

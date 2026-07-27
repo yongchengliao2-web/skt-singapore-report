@@ -52,6 +52,9 @@ jobs:
       - name: Build main report from Google Sheet
         run: python pipelines/build_skt_alignment.py
 
+      - name: Validate main report freshness
+        run: python scripts/check_main_report.py site/index.html
+
       - name: Restore material page and validate bundle
         shell: bash
         run: |
@@ -81,6 +84,24 @@ jobs:
           --project-name "$PROJECT_NAME"
           --branch main
           --commit-dirty=true
+
+      - name: Verify deployed main report content
+        shell: bash
+        run: |
+          verified=0
+          for attempt in $(seq 1 12); do
+            rm -rf .verify
+            if python scripts/download_protected_assets.py \
+              --base-url "$LIVE_URL" \
+              --asset "/=.verify/index.html" \
+              && cmp -s site/index.html .verify/index.html; then
+              verified=1
+              break
+            fi
+            sleep 5
+          done
+          test "$verified" -eq 1
+          python scripts/check_main_report.py .verify/index.html
 
       - name: Verify password gate
         shell: bash
