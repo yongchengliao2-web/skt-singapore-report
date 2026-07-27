@@ -61,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File scripts\set_local_report_session.ps1
 - The report page `刷新数据` button dispatches `.github/workflows/refresh-main-report.yml`.
 - The same workflow refreshes the main Google Sheet report Monday through Friday at 10:45 Asia/Shanghai.
 - The cloud workflow preserves the current material page and never calls the DMS pipeline.
-- The local material automation runs Monday through Friday at 11:15 Asia/Shanghai and preserves the current live main report.
+- The local material automation runs Monday through Friday at 11:40 Asia/Shanghai and preserves the current live main report.
 - Material publishing checks the GitHub main-report workflow before and after deployment; if they overlap, it waits and republishes with the latest main report.
 
 ## Core Field Decision
