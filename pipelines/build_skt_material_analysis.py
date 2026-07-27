@@ -33,6 +33,9 @@ from build_skt_material_snapshots import ensure_material_snapshots
 DMS_DIR = ROOT / "data" / "dms"
 MATERIAL_CODE_RE = re.compile(r"(?<![A-Za-z0-9])(?:SC|JJ)[A-Za-z0-9]{6,}(?![A-Za-z0-9])", re.IGNORECASE)
 URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+INSTAGRAM_POST_RE = re.compile(r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)", re.IGNORECASE)
+OFFSITE_POST_CODE_RE = re.compile(r"(?:^|_)V_([A-Za-z0-9-]{6,})(?=_|$)", re.IGNORECASE)
+POST_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z0-9]{8,16})(?![A-Za-z0-9])")
 
 
 def safe_div(numerator: float, denominator: float) -> float | None:
@@ -45,6 +48,46 @@ def first_url(*values: Any) -> str:
         match = URL_RE.search(text)
         if match:
             return match.group(0)
+    return ""
+
+
+def post_shortcodes(*values: Any) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = clean_text(value)
+        if not text:
+            continue
+        candidates = (
+            [match.group(1) for match in INSTAGRAM_POST_RE.finditer(text)]
+            + [match.group(1) for match in OFFSITE_POST_CODE_RE.finditer(text)]
+            + [match.group(1) for match in POST_TOKEN_RE.finditer(text)]
+        )
+        for candidate in candidates:
+            normalized = candidate.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            found.append(candidate)
+    return found
+
+
+def find_dms_material(dms_lookup: dict[str, dict[str, Any]], *values: Any) -> dict[str, Any]:
+    code = material_code(*values)
+    if code and code in dms_lookup:
+        return dms_lookup[code]
+    for shortcode in post_shortcodes(*values):
+        item = dms_lookup.get(f"POST:{shortcode.casefold()}")
+        if item:
+            return item
+    return {}
+
+
+def instagram_post_url(*values: Any) -> str:
+    for value in values:
+        match = OFFSITE_POST_CODE_RE.search(clean_text(value))
+        if match:
+            return f"https://www.instagram.com/reel/{match.group(1)}/"
     return ""
 
 
@@ -208,6 +251,8 @@ def load_dms_rows(category_ref: dict[str, Any]) -> tuple[dict[str, dict[str, Any
                 by_code[code] = item
             for alias in MATERIAL_CODE_RE.findall(name):
                 by_code[alias.upper()] = item
+            for shortcode in post_shortcodes(post_url):
+                by_code[f"POST:{shortcode.casefold()}"] = item
     return by_code, rows, str(path)
 
 
@@ -225,8 +270,8 @@ def build_offsite_materials(path: Path, category_ref: dict[str, Any], dms_lookup
         campaign_name = clean_text(get_value(row, "campaign_name"))
         product = clean_text(get_value(row, "产品")) or "未归类产品"
         code = material_code(ad_name, adset_name, campaign_name)
-        key = code or fallback_material_key(ad_name, adset_name, campaign_name, product)
-        dms = dms_lookup.get(code, {}) if code else {}
+        dms = find_dms_material(dms_lookup, ad_name, adset_name, campaign_name)
+        key = code or dms.get("material_id") or fallback_material_key(ad_name, adset_name, campaign_name, product)
         categories = resolve_categories(category_ref, product, ad_name, campaign_name, dms.get("material_name"))
         category = " / ".join(categories)
         row_fx = parse_number(get_value(row, "汇率", "Exchange Rate", "FX")) or DEFAULT_OFFSITE_FX_RATE
@@ -249,7 +294,11 @@ def build_offsite_materials(path: Path, category_ref: dict[str, Any], dms_lookup
         material_name = ("" if dms_name_is_code else dms_name) or ad_name or code or key
         material_type = normalize_material_type(dms.get("material_type"), get_value(row, "广告类型"), ad_name)
         preview_url = dms.get("preview_url") or dms.get("play_url") or first_url(ad_name, campaign_name)
-        post_url = dms.get("post_url") or first_url(get_value(row, "帖子链接"), get_value(row, "Post URL"))
+        post_url = (
+            dms.get("post_url")
+            or first_url(get_value(row, "帖子链接"), get_value(row, "Post URL"))
+            or instagram_post_url(ad_name, adset_name, campaign_name)
+        )
         snapshot_mode = link_snapshot_mode(dms.get("snapshot_mode"), dms.get("material_source"), post_url)
         if snapshot_mode == "link" and not post_url:
             post_url = first_url(preview_url, dms.get("play_url"))
@@ -380,7 +429,7 @@ def build_payload() -> dict[str, Any]:
                 "sheet": "站外数据源",
                 "date": "Date_start",
                 "metric": "Spend / Purchase Value / Impressions / link-Click / Conversions / Add_to_cart / 汇率",
-                "normalization": "Spend 与 Purchase Value 乘行级汇率后进入 RMB 指标；素材编号优先从 Ad_name/adset_name/campaign_name 中识别 SC/JJ 编号。",
+                "normalization": "Spend 与 Purchase Value 乘行级汇率后进入 RMB 指标；素材优先识别 SC/JJ 编号，帖子按 Instagram 短码关联 DMS 原始 URL。",
             },
             {
                 "module": "品类归因",
@@ -393,8 +442,8 @@ def build_payload() -> dict[str, Any]:
                 "module": "DMS素材库",
                 "sheet": "web.cerahdms.com DMS API 本地缓存",
                 "date": "created_at",
-                "metric": "materialCode / materialName / adProductNames / materialType / preview_url",
-                "normalization": "DMS 只提供素材元信息和预览链接，不参与花费/GMV计算；公开页面不包含任何授权凭证。",
+                "metric": "materialCode / materialName / adProductNames / materialType / post_url / preview_url",
+                "normalization": "KOL/帖子素材只展示原始 URL 并跳转，不下载媒体；DMS 不参与花费/GMV计算，页面不包含授权凭证。",
             },
         ],
     }
