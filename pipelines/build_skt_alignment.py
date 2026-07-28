@@ -319,6 +319,15 @@ def normalize_text(value: Any) -> str:
     return re.sub(r"[\s_\-（）()【】\[\],，:/：]+", "", text)
 
 
+def normalize_audience_type(value: Any) -> str:
+    text = normalize_text(value)
+    if "再营销" in text:
+        return "再营销"
+    if "拉新" in text:
+        return "拉新"
+    return "未标记"
+
+
 def safe_cell(row: list[str], index: int) -> str:
     return clean_text(row[index]) if index < len(row) else ""
 
@@ -718,11 +727,18 @@ def load_offsite(
     daily: dict[str, dict[str, Any]],
     category_ref: dict[str, Any],
     category_daily: dict[tuple[str, str], dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     by_product: dict[tuple[str, str], dict[str, Any]] = {}
     by_product_day: dict[tuple[str, str, str], dict[str, Any]] = {}
     by_type: dict[str, dict[str, Any]] = {}
     by_category: dict[str, dict[str, Any]] = {}
+    by_audience_day: dict[tuple[str, str], dict[str, Any]] = {}
     for row in read_csv(path):
         day = parse_date(get_value(row, "Date_start"))
         if not day:
@@ -748,6 +764,23 @@ def load_offsite(
         item["offsite_clicks"] += clicks
         item["offsite_conversions"] += conversions
         item["offsite_add_to_cart"] += add_to_cart
+
+        audience = normalize_audience_type(get_value(row, "拉新/再营销"))
+        audience_day_row = by_audience_day.setdefault(
+            (day, audience),
+            {
+                "date": day,
+                "audience": audience,
+                "spend_rmb": 0.0,
+                "purchase_value_rmb": 0.0,
+                "clicks": 0.0,
+                "conversions": 0.0,
+            },
+        )
+        audience_day_row["spend_rmb"] += spend_rmb
+        audience_day_row["purchase_value_rmb"] += purchase_rmb
+        audience_day_row["clicks"] += clicks
+        audience_day_row["conversions"] += conversions
 
         source_product = str(get_value(row, "产品") or "未归类产品").strip() or "未归类产品"
         advertised_product = category_ref.get("offsite_product_by_normalized", {}).get(
@@ -887,7 +920,8 @@ def load_offsite(
     product_daily_rows.sort(key=lambda item: (item["date"], item["spend_rmb"]), reverse=True)
     type_rows.sort(key=lambda item: item["spend_rmb"], reverse=True)
     category_rows.sort(key=lambda item: item["spend_rmb"], reverse=True)
-    return product_rows, type_rows, category_rows, product_daily_rows
+    audience_daily_rows = sorted(by_audience_day.values(), key=lambda item: (item["date"], item["audience"]))
+    return product_rows, type_rows, category_rows, product_daily_rows, audience_daily_rows
 
 
 def load_onsite_ads(
@@ -1422,9 +1456,13 @@ def build_payload() -> dict[str, Any]:
 
     store_rows = load_sp_gmv(paths["sp_gmv"], daily, fx_rate)
     load_tt_gmv(paths["tt_gmv"], daily)
-    offsite_product_rows, offsite_type_rows, offsite_category_rows, offsite_product_daily_rows = load_offsite(
-        paths["offsite"], daily, category_ref, category_daily
-    )
+    (
+        offsite_product_rows,
+        offsite_type_rows,
+        offsite_category_rows,
+        offsite_product_daily_rows,
+        offsite_audience_daily_rows,
+    ) = load_offsite(paths["offsite"], daily, category_ref, category_daily)
     onsite_ad_type_rows, onsite_ad_category_rows = load_onsite_ads(
         paths["onsite_ads"], daily, category_ref, category_daily
     )
@@ -1458,6 +1496,7 @@ def build_payload() -> dict[str, Any]:
         "offsite_product_daily_rows": offsite_product_daily_rows,
         "offsite_category_rows": offsite_category_rows[:50],
         "offsite_type_rows": offsite_type_rows,
+        "offsite_audience_daily_rows": offsite_audience_daily_rows,
         "onsite_ad_type_rows": onsite_ad_type_rows,
         "onsite_ad_category_rows": onsite_ad_category_rows[:50],
         "category_reference": {
@@ -1495,8 +1534,8 @@ def build_payload() -> dict[str, Any]:
                 "module": "站外",
                 "sheet": "站外数据源",
                 "date": "Date_start",
-                "metric": "Spend / Purchase Value / 汇率 / Impressions / link-Click / Conversions",
-                "normalization": "Spend 与 Purchase Value x 行级汇率 -> RMB；单品按品类表映射，混合目录按当日品类经营权重拆分",
+                "metric": "Spend / Purchase Value / 汇率 / Impressions / link-Click / Conversions / Q列拉新/再营销",
+                "normalization": "Spend 与 Purchase Value x 行级汇率 -> RMB；Q列拆拉新/再营销，空白归入未标记；单品按品类表映射",
             },
             {
                 "module": "站内广告",
@@ -2181,6 +2220,39 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     tbody tr:nth-child(even) td {
       background: rgba(238, 245, 242, 0.42);
     }
+    .audience-table-wrap {
+      max-height: none;
+    }
+    table.audience-table {
+      min-width: 940px;
+      table-layout: fixed;
+    }
+    .audience-table th,
+    .audience-table td {
+      text-align: right;
+    }
+    .audience-table th:first-child,
+    .audience-table td:first-child {
+      width: 110px;
+      text-align: left;
+    }
+    .audience-table .audience-name {
+      color: var(--ink);
+      font-weight: 900;
+    }
+    .audience-table .audience-change {
+      font-weight: 900;
+    }
+    .audience-table .audience-change.up { color: #c40000; }
+    .audience-table .audience-change.down { color: #008a3d; }
+    .audience-table .audience-unmarked td {
+      background: #fff8e8;
+    }
+    .audience-table .audience-total td {
+      border-top: 2px solid #a9b8b1;
+      background: #eef5f2;
+      font-weight: 900;
+    }
     .empty-state {
       padding: 28px;
       color: var(--muted);
@@ -2592,6 +2664,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <a href="#category-detail">品类明细</a>
         <a href="#product-drilldown">产品明细</a>
         <a href="#offsite-product-detail">站外产品</a>
+        <a href="#audience-performance">人群表现</a>
         <a href="skt-material-analysis.html">素材分析</a>
         <a href="#daily-detail">日明细</a>
         <a href="#field-contract">字段口径</a>
@@ -2759,6 +2832,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
       </div>
       <div class="table-wrap" id="dailyTable"></div>
+    </section>
+
+    <section class="section" id="audience-performance">
+      <div class="section-head">
+        <div>
+          <h2>站外人群表现</h2>
+          <p class="section-note">人群取「站外数据源」Q列“拉新/再营销”；花费与 GMV 均乘行级汇率换算为 RMB，ROI = GMV / 花费，转化率 = Conversions / link-Click，并随当前周期和对比周期联动。</p>
+        </div>
+      </div>
+      <div class="table-wrap audience-table-wrap" id="audienceTable"></div>
     </section>
 
     <section class="section" id="field-contract">
@@ -2960,6 +3043,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function previousRows(period) {
       return period?.invalid ? [] : rowsInPeriod(DATA.daily_rows || [], period.compare);
+    }
+    function selectedAudienceRows(period, rangeName = 'current') {
+      if (period?.invalid) return [];
+      const range = period?.[rangeName] || period?.current;
+      return rowsInPeriod(DATA.offsite_audience_daily_rows || [], range);
     }
     function selectedCategoryDailyRows(period, rangeName = 'current') {
       if (period?.invalid) return [];
@@ -4134,6 +4222,70 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </table>
       `;
     }
+    function aggregateAudienceRows(rows, includeUnmarked = false) {
+      const metrics = ['spend_rmb', 'purchase_value_rmb', 'clicks', 'conversions'];
+      const byAudience = new Map();
+      (rows || []).forEach(row => {
+        const audience = row.audience || '未标记';
+        if (!byAudience.has(audience)) byAudience.set(audience, { audience });
+        const target = byAudience.get(audience);
+        metrics.forEach(key => { target[key] = n(target[key]) + n(row[key]); });
+      });
+      ['拉新', '再营销'].forEach(audience => {
+        if (!byAudience.has(audience)) byAudience.set(audience, { audience });
+      });
+      const hasUnmarked = includeUnmarked || metrics.some(key => n(byAudience.get('未标记')?.[key]));
+      if (hasUnmarked && !byAudience.has('未标记')) byAudience.set('未标记', { audience: '未标记' });
+      const audienceOrder = hasUnmarked ? ['拉新', '再营销', '未标记'] : ['拉新', '再营销'];
+      const result = audienceOrder.map(audience => byAudience.get(audience));
+      const total = { audience: '总计' };
+      metrics.forEach(key => { total[key] = result.reduce((value, row) => value + n(row[key]), 0); });
+      const totalSpend = n(total.spend_rmb);
+      [...result, total].forEach(row => {
+        row.roi = n(row.spend_rmb) ? n(row.purchase_value_rmb) / n(row.spend_rmb) : null;
+        row.conversion_rate = n(row.clicks) ? n(row.conversions) / n(row.clicks) : null;
+        row.spend_share = totalSpend ? n(row.spend_rmb) / totalSpend : null;
+      });
+      total.spend_share = totalSpend ? 1 : null;
+      return [...result, total];
+    }
+    function audienceChangeHtml(current, previous) {
+      return `<span class="audience-change ${metricDeltaClass(current, previous)}">${deltaText(current, previous)}</span>`;
+    }
+    function renderAudienceTable(currentRows, compareRows) {
+      const includeUnmarked = [...(currentRows || []), ...(compareRows || [])].some(row => (
+        row.audience === '未标记' && (n(row.spend_rmb) || n(row.purchase_value_rmb) || n(row.clicks) || n(row.conversions))
+      ));
+      const current = aggregateAudienceRows(currentRows, includeUnmarked);
+      const previous = new Map(aggregateAudienceRows(compareRows, includeUnmarked).map(row => [row.audience, row]));
+      byId('audienceTable').innerHTML = `
+        <table class="audience-table">
+          <thead>
+            <tr><th>人群</th><th>花费</th><th>GMV</th><th>ROI</th><th>转化率</th><th>花费环比</th><th>GMV环比</th><th>ROI环比</th><th>转化率环比</th><th>花费占比</th></tr>
+          </thead>
+          <tbody>
+            ${current.map(row => {
+              const prior = previous.get(row.audience) || {};
+              const rowClass = row.audience === '总计' ? 'audience-total' : (row.audience === '未标记' ? 'audience-unmarked' : '');
+              return `
+                <tr class="${rowClass}">
+                  <td class="audience-name">${escapeHtml(row.audience)}</td>
+                  <td>${money(row.spend_rmb)}</td>
+                  <td>${money(row.purchase_value_rmb)}</td>
+                  <td>${roas(row.roi)}</td>
+                  <td>${ratio(row.conversion_rate)}</td>
+                  <td>${audienceChangeHtml(row.spend_rmb, prior.spend_rmb)}</td>
+                  <td>${audienceChangeHtml(row.purchase_value_rmb, prior.purchase_value_rmb)}</td>
+                  <td>${audienceChangeHtml(row.roi, prior.roi)}</td>
+                  <td>${audienceChangeHtml(row.conversion_rate, prior.conversion_rate)}</td>
+                  <td>${ratio(row.spend_share)}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+    }
     function renderFieldTable() {
       const rows = DATA.field_map || [];
       byId('fieldTable').innerHTML = `
@@ -4164,6 +4316,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const compareOffsiteProductRows = selectedOffsiteProductRows(period, 'compare');
       const productRows = selectedProductRows(period);
       const compareProductRows = selectedProductRows(period, 'compare');
+      const audienceRows = selectedAudienceRows(period);
+      const compareAudienceRows = selectedAudienceRows(period, 'compare');
       const offsiteProductView = buildOffsiteProductView(
         offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows,
       );
@@ -4183,6 +4337,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       renderOffsiteProductTable(offsiteProductView.current, offsiteProductView.compare);
       renderOffsiteActionSignals(offsiteProductView.current, offsiteProductView.compare, period);
       renderDailyTable(rows);
+      renderAudienceTable(audienceRows, compareAudienceRows);
       renderFieldTable();
     }
     function setupDateControls() {
@@ -4447,6 +4602,10 @@ def validate_report_html(html: str) -> None:
         'id="onsiteSpendCompareChart"',
         'id="offsiteSpendCompareChart"',
         "function renderPeriodComparisonCharts",
+        'id="audience-performance"',
+        'id="audienceTable"',
+        "function renderAudienceTable",
+        "Q列“拉新/再营销”",
         "GMV(After Seller Discounts)（I列）",
         '<a href="skt-material-analysis.html">素材分析</a>',
     )

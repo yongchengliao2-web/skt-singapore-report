@@ -7,7 +7,9 @@ from pipelines.build_skt_alignment import (
     HTML_TEMPLATE,
     assign_onsite_products_to_offsite_catalog,
     load_category_reference,
+    load_offsite,
     load_sp_gmv,
+    normalize_audience_type,
     normalize_text,
 )
 
@@ -76,6 +78,84 @@ class LoadSpGmvTests(unittest.TestCase):
 
         self.assertAlmostEqual(daily["2026-07-22"]["sp_gmv_sgd"], 100.0)
         self.assertAlmostEqual(daily["2026-07-22"]["sp_gmv_rmb"], 535.0)
+
+
+class OffsiteAudienceTests(unittest.TestCase):
+    def test_normalizes_q_column_values_and_preserves_blanks(self) -> None:
+        self.assertEqual(normalize_audience_type("拉新"), "拉新")
+        self.assertEqual(normalize_audience_type("再营销"), "再营销")
+        self.assertEqual(normalize_audience_type(""), "未标记")
+
+    def test_groups_q_column_by_day_and_applies_row_exchange_rate(self) -> None:
+        fieldnames = [
+            "Date_start",
+            "Spend",
+            "Purchase Value",
+            "汇率",
+            "link-Click",
+            "Conversions",
+            "拉新/再营销",
+            "产品",
+        ]
+        source_rows = [
+            {
+                "Date_start": "2026-07-28",
+                "Spend": "10",
+                "Purchase Value": "30",
+                "汇率": "6.9",
+                "link-Click": "20",
+                "Conversions": "2",
+                "拉新/再营销": "拉新",
+                "产品": "测试产品",
+            },
+            {
+                "Date_start": "2026-07-28",
+                "Spend": "5",
+                "Purchase Value": "25",
+                "汇率": "7",
+                "link-Click": "10",
+                "Conversions": "3",
+                "拉新/再营销": "再营销",
+                "产品": "测试产品",
+            },
+            {
+                "Date_start": "2026-07-28",
+                "Spend": "1",
+                "Purchase Value": "2",
+                "汇率": "6.9",
+                "link-Click": "4",
+                "Conversions": "1",
+                "拉新/再营销": "",
+                "产品": "测试产品",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "offsite.csv"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(source_rows)
+            daily = {}
+            category_daily = {}
+            category_ref = {"offsite_product_by_normalized": {}}
+            *_, audience_rows = load_offsite(source, daily, category_ref, category_daily)
+
+        by_audience = {row["audience"]: row for row in audience_rows}
+        self.assertAlmostEqual(by_audience["拉新"]["spend_rmb"], 69.0)
+        self.assertAlmostEqual(by_audience["拉新"]["purchase_value_rmb"], 207.0)
+        self.assertAlmostEqual(by_audience["再营销"]["spend_rmb"], 35.0)
+        self.assertAlmostEqual(by_audience["再营销"]["purchase_value_rmb"], 175.0)
+        self.assertAlmostEqual(by_audience["未标记"]["spend_rmb"], 6.9)
+        self.assertEqual(by_audience["未标记"]["clicks"], 4.0)
+        self.assertEqual(by_audience["未标记"]["conversions"], 1.0)
+
+    def test_report_renders_the_q_column_audience_comparison_table(self) -> None:
+        self.assertIn('id="audience-performance"', HTML_TEMPLATE)
+        self.assertIn('class="audience-table"', HTML_TEMPLATE)
+        self.assertIn("function renderAudienceTable", HTML_TEMPLATE)
+        self.assertIn("花费环比", HTML_TEMPLATE)
+        self.assertIn("转化率环比", HTML_TEMPLATE)
 
 
 class OffsiteProductCatalogTests(unittest.TestCase):
