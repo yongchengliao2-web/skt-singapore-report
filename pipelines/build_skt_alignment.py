@@ -2661,6 +2661,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <a href="#platform-split">渠道与漏斗</a>
         <a href="#category-overview">品类结构</a>
         <a href="#visitor-conversion">访客转化</a>
+        <a href="#product-visitor-conversion">产品转化</a>
         <a href="#category-detail">品类明细</a>
         <a href="#product-drilldown">产品明细</a>
         <a href="#offsite-product-detail">站外产品</a>
@@ -2789,6 +2790,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="panel">
           <div class="chart medium" id="unitSplitChart"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="product-visitor-conversion">
+      <div class="section-head">
+        <div>
+          <h2>产品站内访客与转化率</h2>
+          <p class="section-note">横轴为站内商品访客，纵轴为支付件转化率，气泡大小代表商品销售额 RMB；右侧展示访客 Top 产品及其支付件转化率，随日期与品类筛选刷新。</p>
+        </div>
+      </div>
+      <div class="grid-even">
+        <div class="panel">
+          <div class="chart medium" id="productMediaChart"></div>
+        </div>
+        <div class="panel">
+          <div class="chart medium" id="productTrafficChart"></div>
         </div>
       </div>
     </section>
@@ -3933,6 +3951,88 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         ],
       }, true);
     }
+    function shortChartLabel(value, limit = 11) {
+      const text = String(value || '未命名单品');
+      return text.length > limit ? `${text.slice(0, limit)}…` : text;
+    }
+    function renderProductMediaChart(productRows) {
+      const rows = productRows
+        .filter(row => n(row.visitors) || n(row.paid_units))
+        .sort((a, b) => n(b.paid_sales_rmb) - n(a.paid_sales_rmb))
+        .slice(0, 24);
+      const maxSales = Math.max(...rows.map(row => n(row.paid_sales_rmb)), 1);
+      initChart('productMediaChart').setOption({
+        color: ['#17594f'],
+        tooltip: {
+          formatter: params => {
+            const row = params.data.raw;
+            return `${row.product}<br/>品类：${row.category || '未归类'}<br/>站内访客：${fmt0.format(n(row.visitors))}<br/>支付件转化率：${ratio(row.unit_conversion_rate)}<br/>加购率：${ratio(row.add_to_cart_rate)}<br/>商品销售额：${money(row.paid_sales_rmb)}<br/>支付件数：${fmt0.format(n(row.paid_units))}`;
+          },
+        },
+        grid: { left: 72, right: 36, top: 36, bottom: 58 },
+        xAxis: { type: 'value', name: '站内访客', axisLabel: { formatter: value => compact(value) } },
+        yAxis: { type: 'value', name: '支付件转化率', axisLabel: { formatter: value => ratio(value) } },
+        series: [{
+          name: '产品',
+          type: 'scatter',
+          symbolSize: value => 12 + 42 * Math.sqrt(Math.max(0, value[2]) / maxSales),
+          data: rows.map(row => ({
+            name: row.product,
+            value: [n(row.visitors), n(row.unit_conversion_rate), n(row.paid_sales_rmb)],
+            raw: row,
+          })),
+          label: { show: true, formatter: params => shortChartLabel(params.name), position: 'right' },
+          labelLayout: { hideOverlap: true },
+          emphasis: { label: { show: true, formatter: params => params.name } },
+          encode: { x: 0, y: 1 },
+        }],
+      }, true);
+    }
+    function renderProductTrafficChart(productRows) {
+      const rows = [...productRows]
+        .filter(row => n(row.visitors) || n(row.paid_units))
+        .sort((a, b) => n(b.visitors) - n(a.visitors))
+        .slice(0, 12)
+        .reverse();
+      initChart('productTrafficChart').setOption({
+        color: ['#2563eb', '#0f766e'],
+        tooltip: {
+          trigger: 'axis',
+          formatter: params => {
+            const item = params.find(param => param.data?.raw);
+            const row = item?.data?.raw;
+            if (!row) return '';
+            return `${row.product}<br/>品类：${row.category || '未归类'}<br/>站内访客：${fmt0.format(n(row.visitors))}<br/>支付件数：${fmt0.format(n(row.paid_units))}<br/>支付件转化率：${ratio(row.unit_conversion_rate)}<br/>商品销售额：${money(row.paid_sales_rmb)}`;
+          },
+        },
+        legend: { top: 0, data: ['站内访客', '支付件转化率'] },
+        grid: { left: 112, right: 46, top: 50, bottom: 34 },
+        xAxis: [
+          { type: 'value', position: 'bottom', axisLabel: { formatter: value => compact(value) } },
+          { type: 'value', position: 'top', axisLabel: { formatter: value => ratio(value) }, splitLine: { show: false } },
+        ],
+        yAxis: {
+          type: 'category',
+          data: rows.map(row => row.product),
+          axisLabel: { width: 92, overflow: 'truncate', formatter: value => shortChartLabel(value) },
+        },
+        series: [
+          {
+            name: '站内访客',
+            type: 'bar',
+            barMaxWidth: 18,
+            data: rows.map(row => ({ value: n(row.visitors), raw: row })),
+          },
+          {
+            name: '支付件转化率',
+            type: 'scatter',
+            xAxisIndex: 1,
+            symbolSize: 11,
+            data: rows.map(row => ({ value: [n(row.unit_conversion_rate), row.product], raw: row })),
+          },
+        ],
+      }, true);
+    }
     function renderInsights(rows, compareRows, categoryRows, offsiteProductRows, period) {
       const t = totals(rows);
       const p = totals(compareRows || []);
@@ -4331,6 +4431,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       renderCategoryChart(categoryRows);
       renderCategoryMediaChart(categoryRows);
       renderUnitSplitChart(categoryRows);
+      renderProductMediaChart(productRows);
+      renderProductTrafficChart(productRows);
       renderInsights(rows, compare, categoryRows, offsiteProductRows, period);
       renderCategoryTable(categoryRows, compareCategoryRows);
       renderProductTable(productRows, compareProductRows);
@@ -4605,6 +4707,13 @@ def validate_report_html(html: str) -> None:
         'id="audience-performance"',
         'id="audienceTable"',
         "function renderAudienceTable",
+        'id="product-visitor-conversion"',
+        'id="productMediaChart"',
+        'id="productTrafficChart"',
+        "function renderProductMediaChart",
+        "function renderProductTrafficChart",
+        "renderProductMediaChart(productRows)",
+        "renderProductTrafficChart(productRows)",
         "Q列“拉新/再营销”",
         "GMV(After Seller Discounts)（I列）",
         '<a href="skt-material-analysis.html">素材分析</a>',

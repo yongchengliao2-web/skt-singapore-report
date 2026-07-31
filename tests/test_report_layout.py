@@ -31,6 +31,15 @@ class ReportLayoutTests(unittest.TestCase):
         self.assertIn('class="external-post-preview"', MATERIAL_REPORT_TEMPLATE)
         self.assertIn('rel="noopener noreferrer"', MATERIAL_REPORT_TEMPLATE)
 
+    def test_product_visitor_conversion_uses_filtered_product_rows(self) -> None:
+        self.assertIn('id="product-visitor-conversion"', MAIN_REPORT_TEMPLATE)
+        self.assertIn('id="productMediaChart"', MAIN_REPORT_TEMPLATE)
+        self.assertIn('id="productTrafficChart"', MAIN_REPORT_TEMPLATE)
+        self.assertIn("function renderProductMediaChart(productRows)", MAIN_REPORT_TEMPLATE)
+        self.assertIn("function renderProductTrafficChart(productRows)", MAIN_REPORT_TEMPLATE)
+        self.assertIn("renderProductMediaChart(productRows);", MAIN_REPORT_TEMPLATE)
+        self.assertIn("renderProductTrafficChart(productRows);", MAIN_REPORT_TEMPLATE)
+
 
 if __name__ == "__main__":
     unittest.main()
