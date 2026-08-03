@@ -40,6 +40,11 @@ class ReportLayoutTests(unittest.TestCase):
         self.assertIn("renderProductMediaChart(productRows);", MAIN_REPORT_TEMPLATE)
         self.assertIn("renderProductTrafficChart(productRows);", MAIN_REPORT_TEMPLATE)
 
+    def test_filter_summary_warns_when_core_sources_are_partial(self) -> None:
+        self.assertIn("function coreDataCompleteDate()", MAIN_REPORT_TEMPLATE)
+        self.assertIn("核心源表完整至", MAIN_REPORT_TEMPLATE)
+        self.assertIn('dataset.warning = String(hasPartialData)', MAIN_REPORT_TEMPLATE)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1860,6 +1860,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .filter-feedback .section-note {
       margin: 0;
     }
+    .filter-feedback .section-note[data-warning="true"] {
+      color: #a15c00;
+      font-weight: 850;
+    }
     .refresh-status {
       margin: 0;
       color: var(--muted);
@@ -2948,6 +2952,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         end: rows[rows.length - 1]?.date || DATA.summary.date_end,
       };
     }
+    function coreDataCompleteDate() {
+      const freshness = DATA.summary?.freshness || {};
+      const dates = ['sp_gmv', 'tt_gmv', 'offsite', 'onsite_ads', 'onsite_products']
+        .map(key => freshness[key] || '');
+      return dates.every(Boolean) ? dates.sort()[0] : '';
+    }
     function addDays(value, offset) {
       const day = parseDay(value);
       if (!day) return '';
@@ -3043,10 +3053,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const currentText = period?.current ? `${period.current.start || '-'} ~ ${period.current.end || '-'}` : '-';
       const compareText = period?.compare ? `${period.compare.start || '-'} ~ ${period.compare.end || '-'}` : '-';
       const dayText = period?.invalid ? '周期未完整' : `${period.days} 天`;
-      const summary = `${modeText}：当前 ${currentText}（${dayText}） / 对比 ${compareText}`;
-      if (byId('periodSummary')) byId('periodSummary').textContent = summary;
+      const completeDate = coreDataCompleteDate();
+      const selectedEnd = period?.current?.end || '';
+      const hasPartialData = !completeDate || (selectedEnd && selectedEnd > completeDate);
+      const freshnessText = completeDate
+        ? `；核心源表完整至 ${completeDate}${hasPartialData ? '，之后部分指标尚未回传' : ''}`
+        : '；核心源表日期缺失，请检查 Google Sheet';
+      const summary = `${modeText}：当前 ${currentText}（${dayText}） / 对比 ${compareText}${freshnessText}`;
+      if (byId('periodSummary')) {
+        byId('periodSummary').textContent = summary;
+        byId('periodSummary').dataset.warning = String(hasPartialData);
+      }
       if (byId('heroPeriod')) byId('heroPeriod').textContent = modeText;
-      if (byId('heroFreshness')) byId('heroFreshness').textContent = period?.current?.end ? `截至 ${period.current.end}` : '截至昨天';
+      if (byId('heroFreshness')) {
+        byId('heroFreshness').textContent = selectedEnd
+          ? (hasPartialData && completeDate ? `筛选至 ${selectedEnd} · 完整至 ${completeDate}` : `截至 ${selectedEnd}`)
+          : '截至昨天';
+      }
       if (byId('periodBadge')) byId('periodBadge').textContent = modeText;
     }
     function rowInPeriod(row, period) {
@@ -4714,6 +4737,8 @@ def validate_report_html(html: str) -> None:
         "function renderProductTrafficChart",
         "renderProductMediaChart(productRows)",
         "renderProductTrafficChart(productRows)",
+        "function coreDataCompleteDate",
+        "核心源表完整至",
         "Q列“拉新/再营销”",
         "GMV(After Seller Discounts)（I列）",
         '<a href="skt-material-analysis.html">素材分析</a>',

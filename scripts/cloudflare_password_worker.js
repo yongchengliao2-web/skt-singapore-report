@@ -276,7 +276,7 @@ function publicRunStatus(run, requestId, reused = false) {
     ? "刷新任务正在执行"
     : success
       ? "主报表已刷新并发布"
-      : `刷新失败（${run.conclusion || "unknown"}），线上报表已保留原版本`;
+      : `刷新失败（${run.conclusion || "unknown"}）：请检查 Google Sheet 最新日期或字段错误，线上报表已保留原版本`;
   return {
     request_id: requestId,
     status: run.status,

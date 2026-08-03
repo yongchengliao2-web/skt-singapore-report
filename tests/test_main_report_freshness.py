@@ -46,9 +46,15 @@ class MainReportFreshnessTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "onsite_products=2026-07-23"):
             validate_freshness(payload, "2026-07-26")
 
-    def test_expected_date_uses_shanghai_yesterday(self) -> None:
-        now = datetime(2026, 7, 27, 10, 45, tzinfo=timezone(timedelta(hours=8)))
-        self.assertEqual(expected_minimum_date(now), "2026-07-26")
+    def test_expected_date_allows_two_business_days_of_source_lag(self) -> None:
+        monday = datetime(2026, 8, 3, 10, 45, tzinfo=timezone(timedelta(hours=8)))
+        wednesday = datetime(2026, 8, 5, 10, 45, tzinfo=timezone(timedelta(hours=8)))
+        self.assertEqual(expected_minimum_date(monday), "2026-07-30")
+        self.assertEqual(expected_minimum_date(wednesday), "2026-08-03")
+
+    def test_expected_date_skips_weekends_for_manual_refreshes(self) -> None:
+        sunday = datetime(2026, 8, 2, 14, 0, tzinfo=timezone(timedelta(hours=8)))
+        self.assertEqual(expected_minimum_date(sunday), "2026-07-30")
 
 
 if __name__ == "__main__":

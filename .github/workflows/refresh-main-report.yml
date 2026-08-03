@@ -53,7 +53,7 @@ jobs:
         run: python pipelines/build_skt_alignment.py
 
       - name: Validate main report freshness
-        run: python scripts/check_main_report.py site/index.html
+        run: python scripts/check_main_report.py site/index.html --business-day-lag 2
 
       - name: Restore material page and validate bundle
         shell: bash
@@ -101,7 +101,7 @@ jobs:
             sleep 5
           done
           test "$verified" -eq 1
-          python scripts/check_main_report.py .verify/index.html
+          python scripts/check_main_report.py .verify/index.html --business-day-lag 2
 
       - name: Verify password gate
         shell: bash
