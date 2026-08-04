@@ -427,6 +427,29 @@ def load_category_reference(path: Path) -> dict[str, Any]:
     }
 
 
+def infer_offsite_advertised_product(category_ref: dict[str, Any], *values: Any) -> str:
+    catalog = category_ref.get("offsite_product_by_normalized", {})
+    if not catalog:
+        return ""
+
+    search_values = [normalize_text(value) for value in values if clean_text(value)]
+    candidates: list[tuple[str, str]] = []
+    for normalized, product in catalog.items():
+        aliases = {normalized, re.sub(r"^combo", "", normalized, flags=re.IGNORECASE)}
+        candidates.extend((alias, product) for alias in aliases if len(alias) >= 2)
+    candidates.sort(key=lambda item: len(item[0]), reverse=True)
+
+    for value in search_values:
+        for alias, product in candidates:
+            if value == alias:
+                return product
+    for value in search_values:
+        for alias, product in candidates:
+            if alias in value:
+                return product
+    return ""
+
+
 PRODUCT_CORE_TERMS = (
     "水油喷雾",
     "防晒喷雾",
@@ -782,10 +805,15 @@ def load_offsite(
         audience_day_row["clicks"] += clicks
         audience_day_row["conversions"] += conversions
 
-        source_product = str(get_value(row, "产品") or "未归类产品").strip() or "未归类产品"
-        advertised_product = category_ref.get("offsite_product_by_normalized", {}).get(
-            normalize_text(source_product), ""
+        raw_product = clean_text(get_value(row, "产品"))
+        advertised_product = infer_offsite_advertised_product(
+            category_ref,
+            raw_product,
+            get_value(row, "Ad_name"),
+            get_value(row, "adset_name"),
+            get_value(row, "campaign_name"),
         )
+        source_product = raw_product or advertised_product or "未归类产品"
         product = advertised_product or source_product
         categories = resolve_categories(category_ref, product, get_value(row, "Ad_name"), get_value(row, "campaign_name"))
         category_label = " / ".join(categories)
@@ -1535,7 +1563,7 @@ def build_payload() -> dict[str, Any]:
                 "sheet": "站外数据源",
                 "date": "Date_start",
                 "metric": "Spend / Purchase Value / 汇率 / Impressions / link-Click / Conversions / Q列拉新/再营销",
-                "normalization": "Spend 与 Purchase Value x 行级汇率 -> RMB；Q列拆拉新/再营销，空白归入未标记；单品按品类表映射",
+                "normalization": "Spend 与 Purchase Value x 行级汇率 -> RMB；Q列拆拉新/再营销，空白归入未标记；产品优先按源表产品映射 T 列，产品为空时从广告名称最长匹配",
             },
             {
                 "module": "站内广告",
@@ -2499,6 +2527,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       background: #f4f6f5;
       color: #667b73;
     }
+    .placement-badge.unmatched {
+      border-color: #e3bf79;
+      background: #fff7e6;
+      color: #8a5700;
+    }
     .offsite-product-group-row td {
       padding: 9px 10px;
       border-bottom-color: #c8ded4;
@@ -2510,6 +2543,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       border-bottom-color: #d9e1dd;
       background: #f2f5f3;
       color: var(--muted);
+    }
+    .offsite-product-group-row.unmatched td {
+      border-bottom-color: #ead09b;
+      background: #fff8e9;
+      color: #8a5700;
     }
     .offsite-product-group-row strong {
       margin-right: 9px;
@@ -3800,6 +3838,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         });
       return byAdvertisedProduct;
     }
+    function aggregateUnmatchedOffsiteRow(rows) {
+      const unmatchedRows = (rows || []).filter(row =>
+        !row.advertised_product && offsiteMetricFields.some(field => n(row[field]) !== 0)
+      );
+      if (!unmatchedRows.length) return null;
+      const target = {
+        product: '未识别站外产品',
+        category: '未归类',
+        spend: 0,
+        spend_rmb: 0,
+        purchase_value: 0,
+        purchase_value_rmb: 0,
+        impressions: 0,
+        conversions: 0,
+        clicks: 0,
+        add_to_cart: 0,
+      };
+      unmatchedRows.forEach(row => {
+        offsiteMetricFields.forEach(field => { target[field] += n(row[field]); });
+      });
+      return target;
+    }
     function indexUnadvertisedOnsiteRows(rows) {
       const byProduct = new Map();
       (rows || [])
@@ -3811,8 +3871,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       return byProduct;
     }
     function offsiteDisplayRow(key, status, offsiteRow, onsiteRow, identity, productGmvTotal, offsiteSpendTotal) {
-      const advertised = status === 'advertised';
-      const product = advertised
+      const carriesOffsiteMetrics = status !== 'unadvertised';
+      const product = carriesOffsiteMetrics
         ? (offsiteRow?.product || onsiteRow?.product || identity?.product || '未归类产品')
         : (onsiteRow?.product || identity?.product || '未命名单品');
       const category = onsiteRow?.category || offsiteRow?.category || identity?.category || '未归类';
@@ -3825,10 +3885,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         sp_product_gmv: n(onsiteRow?.paid_sales_rmb),
         visitors: n(onsiteRow?.visitors),
       };
-      offsiteMetricFields.forEach(field => { row[field] = advertised ? n(offsiteRow?.[field]) : 0; });
+      offsiteMetricFields.forEach(field => { row[field] = carriesOffsiteMetrics ? n(offsiteRow?.[field]) : 0; });
       row.gmv_share = productGmvTotal ? row.sp_product_gmv / productGmvTotal : null;
-      row.spend_share = advertised && offsiteSpendTotal ? row.spend_rmb / offsiteSpendTotal : null;
-      row.roas = advertised && row.spend_rmb ? row.purchase_value_rmb / row.spend_rmb : null;
+      row.spend_share = carriesOffsiteMetrics && offsiteSpendTotal ? row.spend_rmb / offsiteSpendTotal : null;
+      row.roas = carriesOffsiteMetrics && row.spend_rmb ? row.purchase_value_rmb / row.spend_rmb : null;
       return row;
     }
     function buildOffsiteProductView(currentOffsiteRows, compareOffsiteRows, currentProductRows, compareProductRows) {
@@ -3836,6 +3896,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const compareOffsite = aggregateAdvertisedOffsiteRows(compareOffsiteRows);
       const currentAdvertisedOnsite = aggregateAdvertisedOnsiteRows(currentProductRows);
       const compareAdvertisedOnsite = aggregateAdvertisedOnsiteRows(compareProductRows);
+      const currentUnmatchedOffsite = aggregateUnmatchedOffsiteRow(currentOffsiteRows);
+      const compareUnmatchedOffsite = aggregateUnmatchedOffsiteRow(compareOffsiteRows);
       const currentUnadvertised = indexUnadvertisedOnsiteRows(currentProductRows);
       const compareUnadvertised = indexUnadvertisedOnsiteRows(compareProductRows);
       const advertisedKeys = new Set([
@@ -3854,7 +3916,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         currentUnadvertised.get(key) || compareUnadvertised.get(key),
       ));
 
-      function rowsForRange(offsiteIndex, advertisedOnsiteIndex, unadvertisedIndex, productRows, offsiteRows) {
+      function rowsForRange(offsiteIndex, advertisedOnsiteIndex, unadvertisedIndex, productRows, offsiteRows, unmatchedOffsiteRow) {
         const productGmvTotal = sum(productRows || [], 'paid_sales_rmb');
         const offsiteSpendTotal = sum(offsiteRows || [], 'spend_rmb');
         const advertisedRows = [...advertisedKeys].map(key => offsiteDisplayRow(
@@ -3865,14 +3927,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           key, 'unadvertised', null, unadvertisedIndex.get(key),
           unadvertisedIdentity.get(key), productGmvTotal, offsiteSpendTotal,
         ));
+        const unmatchedRows = (currentUnmatchedOffsite || compareUnmatchedOffsite)
+          ? [offsiteDisplayRow(
+              'unmatched-offsite', 'unmatched',
+              unmatchedOffsiteRow,
+              null, currentUnmatchedOffsite || compareUnmatchedOffsite,
+              productGmvTotal, offsiteSpendTotal,
+            )]
+          : [];
         advertisedRows.sort((a, b) => (n(b.spend_rmb) - n(a.spend_rmb)) || (n(b.sp_product_gmv) - n(a.sp_product_gmv)));
         unadvertisedRows.sort((a, b) => (n(b.sp_product_gmv) - n(a.sp_product_gmv)) || (n(b.visitors) - n(a.visitors)));
-        return [...advertisedRows, ...unadvertisedRows];
+        return [...advertisedRows, ...unmatchedRows, ...unadvertisedRows];
       }
 
       return {
-        current: rowsForRange(currentOffsite, currentAdvertisedOnsite, currentUnadvertised, currentProductRows, currentOffsiteRows),
-        compare: rowsForRange(compareOffsite, compareAdvertisedOnsite, compareUnadvertised, compareProductRows, compareOffsiteRows),
+        current: rowsForRange(
+          currentOffsite, currentAdvertisedOnsite, currentUnadvertised,
+          currentProductRows, currentOffsiteRows, currentUnmatchedOffsite,
+        ),
+        compare: rowsForRange(
+          compareOffsite, compareAdvertisedOnsite, compareUnadvertised,
+          compareProductRows, compareOffsiteRows, compareUnmatchedOffsite,
+        ),
       };
     }
     function relativeChange(current, previous) {
@@ -4162,27 +4238,32 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       }
       const compareByProduct = new Map((compareOffsiteProductRows || []).map(row => [row.key, row]));
       const advertisedRows = rows.filter(row => row.placement_status === 'advertised');
+      const unmatchedRows = rows.filter(row => row.placement_status === 'unmatched');
       const unadvertisedRows = rows.filter(row => row.placement_status === 'unadvertised');
       const unavailable = '<span class="not-advertised-value">-</span>';
       const renderRows = (groupRows, status) => groupRows.map(row => {
         const previous = compareByProduct.get(row.key) || {};
         const advertised = status === 'advertised';
+        const unmatched = status === 'unmatched';
+        const carriesOffsiteMetrics = advertised || unmatched;
         const badge = advertised
           ? '<span class="placement-badge advertised">T列投放产品</span>'
-          : '<span class="placement-badge unadvertised">未投放产品</span>';
+          : (unmatched
+              ? '<span class="placement-badge unmatched">待补产品映射</span>'
+              : '<span class="placement-badge unadvertised">未投放产品</span>');
         return `
           <tr>
             <td><div class="product-cell"><span>${escapeHtml(row.product)}</span>${badge}</div></td>
-            <td>${tableMetricHtml(row.sp_product_gmv, previous.sp_product_gmv, money)}</td>
-            <td>${tableMetricHtml(row.gmv_share, previous.gmv_share, ratio)}</td>
-            <td>${advertised ? tableMetricHtml(row.spend_rmb, previous.spend_rmb, money, { neutral: true }) : unavailable}</td>
-            <td>${advertised ? tableMetricHtml(row.spend_share, previous.spend_share, ratio, { neutral: true }) : unavailable}</td>
-            <td>${advertised ? tableMetricHtml(row.purchase_value_rmb, previous.purchase_value_rmb, money) : unavailable}</td>
-            <td>${advertised ? tableMetricHtml(row.roas, previous.roas, roas) : unavailable}</td>
-            <td>${advertised ? tableMetricHtml(row.impressions, previous.impressions, value => fmt0.format(n(value))) : unavailable}</td>
-            <td>${advertised ? tableMetricHtml(row.clicks, previous.clicks, value => fmt0.format(n(value))) : unavailable}</td>
-            <td>${advertised ? tableMetricHtml(row.add_to_cart, previous.add_to_cart, value => fmt0.format(n(value))) : unavailable}</td>
-            <td>${advertised ? tableMetricHtml(row.conversions, previous.conversions, value => fmt0.format(n(value))) : unavailable}</td>
+            <td>${unmatched ? unavailable : tableMetricHtml(row.sp_product_gmv, previous.sp_product_gmv, money)}</td>
+            <td>${unmatched ? unavailable : tableMetricHtml(row.gmv_share, previous.gmv_share, ratio)}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.spend_rmb, previous.spend_rmb, money, { neutral: true }) : unavailable}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.spend_share, previous.spend_share, ratio, { neutral: true }) : unavailable}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.purchase_value_rmb, previous.purchase_value_rmb, money) : unavailable}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.roas, previous.roas, roas) : unavailable}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.impressions, previous.impressions, value => fmt0.format(n(value))) : unavailable}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.clicks, previous.clicks, value => fmt0.format(n(value))) : unavailable}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.add_to_cart, previous.add_to_cart, value => fmt0.format(n(value))) : unavailable}</td>
+            <td>${carriesOffsiteMetrics ? tableMetricHtml(row.conversions, previous.conversions, value => fmt0.format(n(value))) : unavailable}</td>
           </tr>
         `;
       }).join('');
@@ -4191,6 +4272,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>
           <tbody>
             ${advertisedRows.length ? `<tr class="offsite-product-group-row"><td colspan="11"><strong>已投放产品</strong><span>来自品类表 T 列 · ${advertisedRows.length} 个</span></td></tr>${renderRows(advertisedRows, 'advertised')}` : ''}
+            ${unmatchedRows.length ? `<tr class="offsite-product-group-row unmatched"><td colspan="11"><strong>待补产品映射</strong><span>站外源表产品为空或未命中 T 列，花费已保留</span></td></tr>${renderRows(unmatchedRows, 'unmatched')}` : ''}
             ${unadvertisedRows.length ? `<tr class="offsite-product-group-row unadvertised"><td colspan="11"><strong>未投放产品</strong><span>站内有经营数据但未命中品类表 T 列 · ${unadvertisedRows.length} 个</span></td></tr>${renderRows(unadvertisedRows, 'unadvertised')}` : ''}
           </tbody>
         </table>

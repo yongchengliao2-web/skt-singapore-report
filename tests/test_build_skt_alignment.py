@@ -6,6 +6,7 @@ from pathlib import Path
 from pipelines.build_skt_alignment import (
     HTML_TEMPLATE,
     assign_onsite_products_to_offsite_catalog,
+    infer_offsite_advertised_product,
     load_category_reference,
     load_offsite,
     load_sp_gmv,
@@ -206,6 +207,67 @@ class OffsiteProductCatalogTests(unittest.TestCase):
         self.assertNotIn((normalize_text("5X\u9762\u971c-80g"), "\u9762\u971c"), assignments)
         self.assertNotIn((normalize_text("GEL\u6d17\u9762\u5976"), "\u6d01\u9762"), assignments)
 
+    def test_infers_longest_catalog_product_when_source_product_is_blank(self) -> None:
+        products = [
+            "\u6c34\u6cb9\u55b7\u96fe",
+            "PDRN\u6c34\u6cb9\u55b7\u96fe",
+            "\u7c89\u8272PDRN\u6c34\u6cb9\u55b7\u96fe",
+        ]
+        reference = {
+            "offsite_products": products,
+            "offsite_product_by_normalized": {normalize_text(product): product for product in products},
+        }
+
+        inferred = infer_offsite_advertised_product(
+            reference,
+            "",
+            "\u7c89\u8272PDRN\u6c34\u6cb9\u55b7\u96fe_\u5e16\u5b50_DC_V_test",
+            "",
+            "generic_campaign",
+        )
+
+        self.assertEqual(inferred, "\u7c89\u8272PDRN\u6c34\u6cb9\u55b7\u96fe")
+
+    def test_blank_source_product_keeps_spend_on_the_inferred_product(self) -> None:
+        product = "PDRN\u9762\u971c"
+        reference = {
+            "offsite_products": [product],
+            "offsite_product_by_normalized": {normalize_text(product): product},
+        }
+        fieldnames = [
+            "Date_start",
+            "Spend",
+            "Purchase Value",
+            "\u6c47\u7387",
+            "\u4ea7\u54c1",
+            "Ad_name",
+            "adset_name",
+            "campaign_name",
+        ]
+        source_row = {
+            "Date_start": "2026-08-03",
+            "Spend": "10",
+            "Purchase Value": "30",
+            "\u6c47\u7387": "6.9",
+            "\u4ea7\u54c1": "",
+            "Ad_name": "PDRN\u9762\u971c_\u5e16\u5b50_DC_V_test",
+            "adset_name": "",
+            "campaign_name": "generic_campaign",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "offsite.csv"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow(source_row)
+            product_rows, *_ = load_offsite(source, {}, reference, {})
+
+        self.assertEqual(len(product_rows), 1)
+        self.assertEqual(product_rows[0]["product"], product)
+        self.assertEqual(product_rows[0]["advertised_product"], product)
+        self.assertAlmostEqual(product_rows[0]["spend_rmb"], 69.0)
+
     def test_uses_source_title_for_a_trusted_pdrn_alias(self) -> None:
         reference = {"offsite_products": ["PDRN\u6c34\u6cb9\u55b7\u96fe"]}
         catalog_rows = [
@@ -228,6 +290,11 @@ class OffsiteProductCatalogTests(unittest.TestCase):
         self.assertIn("row.placement_status === 'unadvertised'", HTML_TEMPLATE)
         self.assertIn("\u672a\u6295\u653e\u4ea7\u54c1", HTML_TEMPLATE)
         self.assertIn('class="not-advertised-value">-', HTML_TEMPLATE)
+
+    def test_report_keeps_unmatched_offsite_spend_visible(self) -> None:
+        self.assertIn("function aggregateUnmatchedOffsiteRow", HTML_TEMPLATE)
+        self.assertIn("\u5f85\u8865\u4ea7\u54c1\u6620\u5c04", HTML_TEMPLATE)
+        self.assertIn("\u82b1\u8d39\u5df2\u4fdd\u7559", HTML_TEMPLATE)
 
 
 if __name__ == "__main__":

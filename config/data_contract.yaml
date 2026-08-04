@@ -45,7 +45,7 @@ source_tabs:
     funnel_type_field: 类型
     audience_type_field: 拉新/再营销
     audience_type_source_column: Q
-    rule: Spend and Purchase Value are source-currency values. Use column C / Spend for offsite spend and multiply Spend and Purchase Value by row-level 汇率 before RMB ROAS or media-spend analysis. If the Google CSV export is incomplete, use the most complete dated positive-Spend local fallback and fill missing 汇率 from the latest exported offsite 汇率.
+    rule: Spend and Purchase Value are source-currency values. Use column C / Spend for offsite spend and multiply Spend and Purchase Value by row-level 汇率 before RMB ROAS or media-spend analysis. Match 产品 to 品类表 column T; when 产品 is blank, infer the longest T-column product match from Ad_name, adset_name, and campaign_name. Preserve still-unmatched spend as an explicit warning row. If the Google CSV export is incomplete, use the most complete dated positive-Spend local fallback and fill missing 汇率 from the latest exported offsite 汇率.
 
   onsite_ads:
     sheet: 站内广告
