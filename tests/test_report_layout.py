@@ -6,9 +6,22 @@ from pipelines.build_skt_alignment import HTML_TEMPLATE as MAIN_REPORT_TEMPLATE
 
 ROOT = Path(__file__).resolve().parents[1]
 MATERIAL_REPORT_TEMPLATE = (ROOT / "pipelines" / "build_skt_material_analysis.py").read_text(encoding="utf-8")
+PASSWORD_WORKER = (ROOT / "scripts" / "cloudflare_password_worker.js").read_text(encoding="utf-8")
 
 
 class ReportLayoutTests(unittest.TestCase):
+    def test_skt_brand_theme_uses_blue_across_public_surfaces(self) -> None:
+        for template in (MAIN_REPORT_TEMPLATE, MATERIAL_REPORT_TEMPLATE):
+            with self.subTest(page="material" if "PAGE_DATA" in template else "main"):
+                self.assertIn("--accent: #2563eb", template)
+                self.assertIn("background: #173f7a", template)
+                self.assertNotIn("--accent: #146b52", template)
+                self.assertNotIn("background: #123f32", template)
+
+        self.assertIn("border-top: 4px solid #2563eb", PASSWORD_WORKER)
+        self.assertIn("background: #2563eb", PASSWORD_WORKER)
+        self.assertNotIn("#146b52", PASSWORD_WORKER)
+
     def test_wide_layout_reserves_navigation_rail_before_centering(self) -> None:
         for template in (MAIN_REPORT_TEMPLATE, MATERIAL_REPORT_TEMPLATE):
             with self.subTest(page="material" if "PAGE_DATA" in template else "main"):

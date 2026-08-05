@@ -1607,19 +1607,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
   <style>
     :root {
-      --bg: #f4f7f5;
+      --bg: #f5f7fb;
       --panel: #ffffff;
-      --panel-soft: #eef5f2;
-      --ink: #17382f;
-      --muted: #667b73;
-      --line: #d9e5df;
-      --accent: #146b52;
+      --panel-soft: #eef4ff;
+      --ink: #17243a;
+      --muted: #64748b;
+      --line: #dbe4f0;
+      --accent: #2563eb;
       --accent-2: #c66b3d;
-      --accent-3: #2f7ea0;
+      --accent-3: #0891b2;
       --accent-4: #7f5ca8;
       --good: #0f766e;
       --bad: #b42318;
-      --shadow: 0 12px 30px rgba(20, 63, 50, 0.08);
+      --shadow: 0 12px 30px rgba(30, 64, 175, 0.08);
       --radius: 8px;
       font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
     }
@@ -1650,7 +1650,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       min-height: 120px;
       padding: 28px;
       border-radius: 8px;
-      background: #123f32;
+      background: #173f7a;
       color: #fff;
       box-shadow: var(--shadow);
     }
@@ -1660,7 +1660,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .hero-eyebrow {
       margin-bottom: 8px;
-      color: #bde2d8;
+      color: #bfdbfe;
       font-size: 13px;
       font-weight: 900;
     }
@@ -1706,7 +1706,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       top: 0;
       z-index: 40;
       border-bottom: 1px solid var(--line);
-      background: rgba(244, 247, 245, 0.92);
+      background: rgba(245, 247, 251, 0.92);
       backdrop-filter: blur(14px);
     }
     .topbar-inner {
@@ -1769,7 +1769,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       top: 51px;
       z-index: 30;
       padding: 16px;
-      background: rgba(246, 250, 248, 0.96);
+      background: rgba(248, 250, 252, 0.96);
       border-radius: 18px;
       backdrop-filter: blur(10px);
     }
@@ -1797,7 +1797,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       padding: 9px 10px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      background: #fbfdfc;
+      background: #fbfcff;
       min-width: 0;
     }
     .period-card .period-label {
@@ -1823,7 +1823,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       border: 1px solid var(--line);
       border-radius: var(--radius);
       padding: 8px 10px;
-      background: #fbfdfc;
+      background: #fbfcff;
       color: var(--ink);
       font: inherit;
       font-size: 13px;
@@ -1832,8 +1832,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     select:focus,
     input[type="date"]:focus {
-      border-color: rgba(20, 107, 82, 0.55);
-      box-shadow: 0 0 0 3px rgba(20, 107, 82, 0.09);
+      border-color: rgba(37, 99, 235, 0.55);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.09);
     }
     .filter-actions {
       display: flex;
@@ -1860,7 +1860,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .button.secondary {
       border-color: var(--line);
-      background: #fbfdfc;
+      background: #fbfcff;
       color: var(--ink);
     }
     .refresh-button {
@@ -1899,7 +1899,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       font-weight: 800;
       text-align: right;
     }
-    .refresh-status[data-state="success"] { color: #146b52; }
+    .refresh-status[data-state="success"] { color: var(--good); }
     .refresh-status[data-state="failure"] { color: #b42318; }
     @keyframes refresh-spin {
       to { transform: rotate(360deg); }
@@ -1922,7 +1922,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       padding: 16px;
       border: 1px solid #cbdcf0;
       border-radius: 14px;
-      background: #fbfdfc;
+      background: #fbfcff;
       display: flex;
       flex-direction: column;
       min-width: 0;
@@ -2282,7 +2282,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .audience-table .audience-total td {
       border-top: 2px solid #a9b8b1;
-      background: #eef5f2;
+      background: var(--panel-soft);
       font-weight: 900;
     }
     .empty-state {
@@ -2307,8 +2307,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       padding: 16px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      background: #fbfdfc;
-      box-shadow: 0 8px 18px rgba(20, 63, 50, 0.045);
+      background: #fbfcff;
+      box-shadow: 0 8px 18px rgba(30, 64, 175, 0.045);
     }
     .insight-box h3 {
       margin: 0 0 8px;
@@ -2390,7 +2390,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       height: 28px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: #fbfdfc;
+      background: #fbfcff;
       color: var(--ink);
       cursor: pointer;
       font-size: 18px;
@@ -2513,10 +2513,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       align-items: center;
       min-height: 20px;
       padding: 2px 6px;
-      border: 1px solid #b9d9cb;
+      border: 1px solid #bfdbfe;
       border-radius: 4px;
-      background: #edf7f2;
-      color: #146b52;
+      background: #eff6ff;
+      color: #1d4ed8;
       font-size: 10px;
       font-weight: 900;
       line-height: 1.2;
@@ -2534,8 +2534,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .offsite-product-group-row td {
       padding: 9px 10px;
-      border-bottom-color: #c8ded4;
-      background: #eaf4ef;
+      border-bottom-color: #bfdbfe;
+      background: #eff6ff;
       color: var(--accent);
       text-align: left;
     }
@@ -3373,7 +3373,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const pointLabel = formatter => ({
         show: showLabels,
         position: 'top',
-        color: '#667b73',
+        color: '#64748b',
         fontSize: 11,
         formatter: params => formatter(params.value),
       });
@@ -3383,7 +3383,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         return money(value);
       };
       chart.setOption({
-        color: ['#13736b', '#b56d3b', '#2f6fed', '#138a86', '#d94f8d', '#7c3cff', '#f07d00'],
+        color: ['#2563eb', '#d97706', '#0891b2', '#0f766e', '#d94f8d', '#7c3aed', '#f07d00'],
         tooltip: {
           trigger: 'axis',
           formatter: params => {
@@ -3401,12 +3401,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           top: 4,
           feature: { saveAsImage: { title: '下载', pixelRatio: 2, backgroundColor: '#ffffff' } },
         },
-        legend: { top: 0, itemGap: 14, textStyle: { color: '#667b73', fontSize: 12 } },
+        legend: { top: 0, itemGap: 14, textStyle: { color: '#64748b', fontSize: 12 } },
         grid: { left: 70, right: 82, top: 58, bottom: 42 },
         xAxis: {
           type: 'category',
           data: rows.map(row => row.date.slice(5)),
-          axisLabel: { hideOverlap: true, color: '#667b73' },
+          axisLabel: { hideOverlap: true, color: '#64748b' },
           axisLine: { lineStyle: { color: '#9aa8a2' } },
           axisTick: { show: false },
         },
@@ -3414,13 +3414,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           {
             type: 'value',
             name: '商品效率',
-            axisLabel: { formatter: value => ratio(value), color: '#667b73' },
-            splitLine: { lineStyle: { color: '#d9e5df' } },
+            axisLabel: { formatter: value => ratio(value), color: '#64748b' },
+            splitLine: { lineStyle: { color: '#dbe4f0' } },
           },
           {
             type: 'value',
             name: 'RMB / 人数',
-            axisLabel: { formatter: value => compact(value), color: '#667b73' },
+            axisLabel: { formatter: value => compact(value), color: '#64748b' },
             splitLine: { show: false },
           },
         ],
@@ -3567,7 +3567,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
               return lines.join('<br/>');
             },
           },
-          legend: { top: 0, left: 'center', itemGap: 14, textStyle: { color: '#667b73', fontSize: 11 } },
+          legend: { top: 0, left: 'center', itemGap: 14, textStyle: { color: '#64748b', fontSize: 11 } },
           toolbox: {
             right: 0,
             top: 0,
@@ -3577,13 +3577,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           xAxis: {
             type: 'category',
             data: alignedRows.map(row => row.currentDate.slice(5)),
-            axisLabel: { hideOverlap: true, color: '#667b73' },
+            axisLabel: { hideOverlap: true, color: '#64748b' },
             axisLine: { lineStyle: { color: '#9aa8a2' } },
             axisTick: { show: false },
           },
           yAxis: {
             type: 'value',
-            axisLabel: { formatter: value => config.formatAxis(value), color: '#667b73' },
+            axisLabel: { formatter: value => config.formatAxis(value), color: '#64748b' },
             splitLine: { lineStyle: { color: '#e2e9e6' } },
           },
           series: [
@@ -4011,7 +4011,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .filter(row => n(row.product_visitors) || n(row.product_paid_units))
         .slice(0, 24);
       initChart('categoryMediaChart').setOption({
-        color: ['#17594f'],
+        color: ['#2563eb'],
         tooltip: {
           formatter: params => {
             const row = params.data.raw;
@@ -4061,7 +4061,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .slice(0, 24);
       const maxSales = Math.max(...rows.map(row => n(row.paid_sales_rmb)), 1);
       initChart('productMediaChart').setOption({
-        color: ['#17594f'],
+        color: ['#2563eb'],
         tooltip: {
           formatter: params => {
             const row = params.data.raw;

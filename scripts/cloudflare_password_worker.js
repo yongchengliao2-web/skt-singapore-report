@@ -109,36 +109,36 @@ function loginPage(invalid = false, status = 401) {
       display: grid;
       place-items: center;
       padding: 24px;
-      color: #17332b;
-      background: #f4f7f5;
+      color: #17243a;
+      background: #f5f7fb;
       font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
     }
     main {
       width: min(100%, 420px);
       padding: 28px;
-      border: 1px solid #cddbd5;
-      border-top: 4px solid #146b52;
+      border: 1px solid #dbe4f0;
+      border-top: 4px solid #2563eb;
       border-radius: 8px;
       background: #fff;
-      box-shadow: 0 14px 34px rgba(20, 63, 50, 0.1);
+      box-shadow: 0 14px 34px rgba(30, 64, 175, 0.1);
     }
-    .brand { display: flex; align-items: center; gap: 10px; color: #146b52; font-size: 13px; font-weight: 900; }
-    .mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; color: #fff; background: #146b52; font-size: 12px; }
+    .brand { display: flex; align-items: center; gap: 10px; color: #2563eb; font-size: 13px; font-weight: 900; }
+    .mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; color: #fff; background: #2563eb; font-size: 12px; }
     h1 { margin: 24px 0 8px; font-size: 24px; line-height: 1.25; letter-spacing: 0; }
-    .note { margin: 0 0 22px; color: #667b73; font-size: 14px; line-height: 1.6; }
+    .note { margin: 0 0 22px; color: #64748b; font-size: 14px; line-height: 1.6; }
     label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 850; }
     input {
-      width: 100%; height: 44px; border: 1px solid #b9cbc4; border-radius: 6px; padding: 0 12px;
-      color: #17332b; background: #fbfdfc; font: inherit; outline: none;
+      width: 100%; height: 44px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0 12px;
+      color: #17243a; background: #fbfcff; font: inherit; outline: none;
     }
-    input:focus { border-color: #146b52; box-shadow: 0 0 0 3px rgba(20, 107, 82, 0.12); }
+    input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12); }
     button {
-      width: 100%; height: 44px; margin-top: 12px; border: 1px solid #146b52; border-radius: 6px;
-      color: #fff; background: #146b52; font: inherit; font-weight: 900; cursor: pointer;
+      width: 100%; height: 44px; margin-top: 12px; border: 1px solid #2563eb; border-radius: 6px;
+      color: #fff; background: #2563eb; font: inherit; font-weight: 900; cursor: pointer;
     }
-    button:hover { background: #0f5944; }
+    button:hover { background: #1d4ed8; }
     .error { margin: 12px 0 0; color: #b42318; font-size: 13px; font-weight: 800; }
-    .session { margin: 14px 0 0; color: #71837c; text-align: center; font-size: 12px; }
+    .session { margin: 14px 0 0; color: #64748b; text-align: center; font-size: 12px; }
   </style>
 </head>
 <body>
