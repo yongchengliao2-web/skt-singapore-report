@@ -26,6 +26,14 @@ DEFAULT_OFFSITE_FX_RATE = 6.9
 ONSITE_PRODUCT_IMPRESSION_INDEX = 13
 ONSITE_PRODUCT_CLICK_INDEX = 14
 OFFSITE_PRODUCT_CATALOG_INDEX = 19
+ONSITE_PRODUCT_REQUIRED_HEADER_GROUPS = (
+    ("日期date",),
+    ("链接", "Product"),
+    ("Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"),
+    ("Units (Paid Order)",),
+    ("Product Visitors (Visit)",),
+    ("Product Visitors (Add to Cart)",),
+)
 
 SOURCES: dict[str, dict[str, Any]] = {
     "sp_gmv": {
@@ -71,6 +79,38 @@ SOURCES: dict[str, dict[str, Any]] = {
 }
 
 
+def _excel_column_name(index: int) -> str:
+    label = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        label = chr(65 + remainder) + label
+    return label
+
+
+def validate_downloaded_sheet(sheet_name: str, path: Path) -> None:
+    if sheet_name != SOURCES["onsite_products"]["sheet"]:
+        return
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        headers = next(csv.reader(handle), [])
+    if not headers:
+        raise ValueError(f"{sheet_name} returned an empty CSV")
+
+    ref_columns = [
+        _excel_column_name(index)
+        for index, header in enumerate(headers, start=1)
+        if header.strip() == "#REF!"
+    ]
+    if ref_columns:
+        raise ValueError(f"{sheet_name} has #REF! headers in columns {','.join(ref_columns)}")
+
+    header_set = {header.strip() for header in headers if header.strip()}
+    missing_groups = [" / ".join(group) for group in ONSITE_PRODUCT_REQUIRED_HEADER_GROUPS if not header_set.intersection(group)]
+    if len(headers) <= ONSITE_PRODUCT_CLICK_INDEX or missing_groups:
+        missing_text = ", ".join(missing_groups) or f"columns through {_excel_column_name(ONSITE_PRODUCT_CLICK_INDEX + 1)}"
+        raise ValueError(f"{sheet_name} returned unexpected columns; missing {missing_text}")
+
+
 def _download_sheet(sheet_name: str, destination: Path) -> None:
     cachebust = int(datetime.now().timestamp())
     url = (
@@ -89,6 +129,11 @@ def _download_sheet(sheet_name: str, destination: Path) -> None:
     )
     with urlopen(request, timeout=90) as response, part.open("wb") as handle:
         handle.write(response.read())
+    try:
+        validate_downloaded_sheet(sheet_name, part)
+    except Exception:
+        part.unlink(missing_ok=True)
+        raise
     part.replace(destination)
 
 
@@ -117,6 +162,7 @@ def ensure_source_csvs() -> dict[str, Path]:
             continue
 
         if target.exists() and target.stat().st_size > 0:
+            validate_downloaded_sheet(config["sheet"], target)
             resolved[key] = target
             continue
 
@@ -125,6 +171,7 @@ def ensure_source_csvs() -> dict[str, Path]:
             fallback_path = ROOT / fallback
             if fallback_path.exists() and fallback_path.stat().st_size > 0:
                 shutil.copy2(fallback_path, target)
+                validate_downloaded_sheet(config["sheet"], target)
                 copied = True
                 break
 

@@ -12,7 +12,54 @@ from pipelines.build_skt_alignment import (
     load_sp_gmv,
     normalize_audience_type,
     normalize_text,
+    validate_downloaded_sheet,
 )
+
+
+class DownloadedSheetValidationTests(unittest.TestCase):
+    def write_csv(self, path: Path, headers: list[str]) -> None:
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            csv.writer(handle).writerow(headers)
+
+    def test_rejects_ref_headers_before_replacing_onsite_products(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "onsite_products.csv.part"
+            self.write_csv(source, ["#REF!", "", "#REF!"])
+
+            with self.assertRaisesRegex(ValueError, r"#REF! headers in columns A,C"):
+                validate_downloaded_sheet("站内产品数据-skt", source)
+
+    def test_rejects_a_different_sheet_returned_for_onsite_products(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "onsite_products.csv.part"
+            self.write_csv(source, ["店铺", "日期date", "GMV(After Seller Discounts)"])
+
+            with self.assertRaisesRegex(ValueError, "returned unexpected columns"):
+                validate_downloaded_sheet("站内产品数据-skt", source)
+
+    def test_accepts_the_expected_onsite_product_contract(self) -> None:
+        headers = [
+            "日期date",
+            "Item ID",
+            "SKU",
+            "Product",
+            "链接",
+            "品类",
+            "Sales (Placed Order) (SGD)",
+            "Units (Paid Order)",
+            "Product Visitors (Visit)",
+            "Product Page Views",
+            "Product Visitors (Add to Cart)",
+            "汇率",
+            "extra",
+            "Product Impressions",
+            "Product Clicks",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "onsite_products.csv.part"
+            self.write_csv(source, headers)
+
+            validate_downloaded_sheet("站内产品数据-skt", source)
 
 
 class LoadSpGmvTests(unittest.TestCase):
