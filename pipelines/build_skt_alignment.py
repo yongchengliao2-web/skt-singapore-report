@@ -2548,36 +2548,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       width: 18%;
     }
     .offsite-product-table .product-cell {
-      display: flex;
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 5px;
       min-width: 0;
       max-width: none;
-    }
-    .placement-badge {
-      display: inline-flex;
-      align-items: center;
-      min-height: 20px;
-      padding: 2px 6px;
-      border: 1px solid #bfdbfe;
-      border-radius: 4px;
-      background: #eff6ff;
-      color: #1d4ed8;
-      font-size: 10px;
-      font-weight: 900;
-      line-height: 1.2;
-      white-space: nowrap;
-    }
-    .placement-badge.unadvertised {
-      border-color: #d6ddd9;
-      background: #f4f6f5;
-      color: #667b73;
-    }
-    .placement-badge.unmatched {
-      border-color: #e3bf79;
-      background: #fff7e6;
-      color: #8a5700;
     }
     .offsite-product-group-row td {
       padding: 9px 10px;
@@ -4293,14 +4265,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const advertised = status === 'advertised';
         const unmatched = status === 'unmatched';
         const carriesOffsiteMetrics = advertised || unmatched;
-        const badge = advertised
-          ? '<span class="placement-badge advertised">T列投放产品</span>'
-          : (unmatched
-              ? '<span class="placement-badge unmatched">待补产品映射</span>'
-              : '<span class="placement-badge unadvertised">未投放产品</span>');
         return `
           <tr>
-            <td><div class="product-cell"><span>${escapeHtml(row.product)}</span>${badge}</div></td>
+            <td><div class="product-cell">${escapeHtml(row.product)}</div></td>
             <td>${unmatched ? unavailable : tableMetricHtml(row.sp_product_gmv, previous.sp_product_gmv, money)}</td>
             <td>${unmatched ? unavailable : tableMetricHtml(row.gmv_share, previous.gmv_share, ratio)}</td>
             <td>${carriesOffsiteMetrics ? tableMetricHtml(row.spend_rmb, previous.spend_rmb, money, { neutral: true }) : unavailable}</td>
@@ -4832,7 +4799,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 def build_html(payload: dict[str, Any]) -> str:
-    payload_json = json.dumps(payload, ensure_ascii=False)
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return HTML_TEMPLATE.replace("__PAYLOAD__", payload_json)
 
 
@@ -4841,7 +4808,6 @@ def validate_report_html(html: str) -> None:
         '<table class="offsite-product-table">',
         '<thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>',
         "function buildOffsiteProductView",
-        "T列投放产品",
         "未投放产品",
         'id="offsiteActionSignals"',
         "function renderOffsiteActionSignals",
