@@ -23,9 +23,12 @@ SITE_DIR = ROOT / "site"
 SPREADSHEET_ID = "1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk"
 DEFAULT_FX_RATE = 5.35
 DEFAULT_OFFSITE_FX_RATE = 6.9
+ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR = 2.0
 ONSITE_PRODUCT_IMPRESSION_INDEX = 13
 ONSITE_PRODUCT_CLICK_INDEX = 14
 OFFSITE_PRODUCT_CATALOG_INDEX = 19
+SKU_ONSITE_PRODUCT_OVERRIDE_INDEX = 17
+OFFSITE_ONSITE_PRODUCT_OVERRIDE_INDEX = 20
 ONSITE_PRODUCT_REQUIRED_HEADER_GROUPS = (
     ("日期date",),
     ("链接", "Product"),
@@ -140,9 +143,18 @@ def _download_sheet(sheet_name: str, destination: Path) -> None:
 def ensure_source_csvs() -> dict[str, Path]:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     resolved: dict[str, Path] = {}
+    use_local_sources = os.environ.get("SKT_USE_LOCAL_SOURCES", "").casefold() in {"1", "true", "yes"}
 
     for key, config in SOURCES.items():
         target = RAW_DIR / config["filename"]
+        if use_local_sources:
+            if not target.exists() or target.stat().st_size <= 0:
+                raise FileNotFoundError(f"Local source is missing: {target}")
+            validate_downloaded_sheet(config["sheet"], target)
+            resolved[key] = (
+                resolve_offsite_source(target, config, prefer_target=True) if key == "offsite" else target
+            )
+            continue
         downloaded = False
         try:
             _download_sheet(config["sheet"], target)
@@ -389,12 +401,16 @@ def put_mapping(mapping: dict[str, str], key: str, category: str) -> None:
 def load_category_reference(path: Path) -> dict[str, Any]:
     rows = read_csv_rows(path)
     item_id_to_category: dict[str, str] = {}
+    item_id_to_product: dict[str, str] = {}
     item_name_to_category: dict[str, str] = {}
+    item_name_by_normalized: dict[str, str] = {}
     sku_to_category: dict[str, str] = {}
     sku_name_to_category: dict[str, str] = {}
+    sku_to_onsite_product: dict[str, str] = {}
     shop_name_to_store: dict[str, str] = {}
     offsite_products: list[str] = []
     offsite_product_by_normalized: dict[str, str] = {}
+    offsite_product_to_onsite_product: dict[str, str] = {}
     categories: set[str] = set()
 
     for row in rows[1:]:
@@ -410,8 +426,12 @@ def load_category_reference(path: Path) -> dict[str, Any]:
             categories.add(item_category)
         if item_id and item_category:
             put_mapping(item_id_to_category, item_id, item_category)
+        if item_id and item_name:
+            put_mapping(item_id_to_product, item_id, item_name)
         if item_name and item_category:
             put_mapping(item_name_to_category, item_name, item_category)
+        if item_name:
+            item_name_by_normalized.setdefault(normalize_text(item_name), item_name)
 
         sku = safe_cell(row, 12)
         sku_name = safe_cell(row, 13)
@@ -422,12 +442,18 @@ def load_category_reference(path: Path) -> dict[str, Any]:
             put_mapping(sku_to_category, sku, sku_category)
         if sku_name and sku_category:
             put_mapping(sku_name_to_category, sku_name, sku_category)
+        sku_onsite_product = safe_cell(row, SKU_ONSITE_PRODUCT_OVERRIDE_INDEX)
+        if sku and sku_onsite_product:
+            put_mapping(sku_to_onsite_product, sku, sku_onsite_product)
 
         offsite_product = safe_cell(row, OFFSITE_PRODUCT_CATALOG_INDEX)
         normalized_offsite_product = normalize_text(offsite_product)
         if offsite_product and normalized_offsite_product not in offsite_product_by_normalized:
             offsite_products.append(offsite_product)
             offsite_product_by_normalized[normalized_offsite_product] = offsite_product
+        offsite_onsite_product = safe_cell(row, OFFSITE_ONSITE_PRODUCT_OVERRIDE_INDEX)
+        if offsite_product and offsite_onsite_product:
+            offsite_product_to_onsite_product[normalized_offsite_product] = offsite_onsite_product
 
     searchable_names: list[tuple[str, str]] = []
     for mapping in (item_name_to_category, sku_name_to_category):
@@ -457,12 +483,16 @@ def load_category_reference(path: Path) -> dict[str, Any]:
 
     return {
         "item_id_to_category": item_id_to_category,
+        "item_id_to_product": item_id_to_product,
         "item_name_to_category": item_name_to_category,
+        "item_name_by_normalized": item_name_by_normalized,
         "sku_to_category": sku_to_category,
         "sku_name_to_category": sku_name_to_category,
+        "sku_to_onsite_product": sku_to_onsite_product,
         "shop_name_to_store": shop_name_to_store,
         "offsite_products": offsite_products,
         "offsite_product_by_normalized": offsite_product_by_normalized,
+        "offsite_product_to_onsite_product": offsite_product_to_onsite_product,
         "categories": sorted(categories),
         "searchable_names": searchable_names,
         "keyword_categories": keyword_categories,
@@ -474,12 +504,47 @@ def load_category_reference(path: Path) -> dict[str, Any]:
     }
 
 
+def resolve_reference_product(category_ref: dict[str, Any], *values: Any) -> str:
+    item_id_to_product = category_ref.get("item_id_to_product", {})
+    item_name_by_normalized = category_ref.get("item_name_by_normalized", {})
+    normalized_values = [normalize_text(value) for value in values if clean_text(value)]
+    for value in normalized_values:
+        if value in item_id_to_product:
+            return item_id_to_product[value]
+    for value in normalized_values:
+        if value in item_name_by_normalized:
+            return item_name_by_normalized[value]
+    return ""
+
+
+def canonical_offsite_product_name(value: Any) -> str:
+    text = clean_text(value)
+    aliases = (
+        ("半哑光气垫", "半哑精华绿色气垫"),
+        ("面霜合集", "面霜合集"),
+        ("防晒合集", "防晒"),
+        ("洁面合集", "洁面"),
+    )
+    for keyword, canonical in aliases:
+        if keyword in text:
+            return canonical
+    return text
+
+
 def infer_offsite_advertised_product(category_ref: dict[str, Any], *values: Any) -> str:
     catalog = category_ref.get("offsite_product_by_normalized", {})
     if not catalog:
         return ""
 
-    search_values = [normalize_text(value) for value in values if clean_text(value)]
+    search_values = []
+    for value in values:
+        if not clean_text(value):
+            continue
+        search_values.append(normalize_text(value))
+        canonical_value = canonical_offsite_product_name(value)
+        normalized_canonical_value = normalize_text(canonical_value)
+        if normalized_canonical_value and normalized_canonical_value not in search_values:
+            search_values.append(normalized_canonical_value)
     candidates: list[tuple[str, str]] = []
     for normalized, product in catalog.items():
         aliases = {normalized, re.sub(r"^combo", "", normalized, flags=re.IGNORECASE)}
@@ -489,11 +554,11 @@ def infer_offsite_advertised_product(category_ref: dict[str, Any], *values: Any)
     for value in search_values:
         for alias, product in candidates:
             if value == alias:
-                return product
+                return canonical_offsite_product_name(product)
     for value in search_values:
         for alias, product in candidates:
             if alias in value:
-                return product
+                return canonical_offsite_product_name(product)
     return ""
 
 
@@ -605,8 +670,28 @@ def assign_onsite_products_to_offsite_catalog(
 
     assignments: dict[tuple[str, str], str] = {}
     assigned_catalog_products: set[str] = set()
+    rows_by_product: dict[str, list[dict[str, Any]]] = {}
+    rows_by_item_id: dict[str, list[dict[str, Any]]] = {}
+    for row in product_catalog_rows:
+        rows_by_product.setdefault(normalize_text(row.get("product")), []).append(row)
+        if normalize_text(row.get("item_id")):
+            rows_by_item_id.setdefault(normalize_text(row.get("item_id")), []).append(row)
+    for catalog_key, target_product in category_ref.get("offsite_product_to_onsite_product", {}).items():
+        target_key = normalize_text(target_product)
+        matches = rows_by_item_id.get(target_key, []) or rows_by_product.get(target_key, [])
+        if len(matches) != 1:
+            continue
+        match = matches[0]
+        identity = (
+            normalize_text(match.get("product")),
+            clean_text(match.get("category")) or "未归类",
+        )
+        catalog_product = category_ref.get("offsite_product_by_normalized", {}).get(catalog_key, "")
+        if catalog_product:
+            assignments[identity] = catalog_product
+            assigned_catalog_products.add(normalize_text(canonical_offsite_product_name(catalog_product)))
     for _, _, catalog_product, identity in sorted(candidates, reverse=True):
-        catalog_key = normalize_text(catalog_product)
+        catalog_key = normalize_text(canonical_offsite_product_name(catalog_product))
         if identity in assignments or catalog_key in assigned_catalog_products:
             continue
         assignments[identity] = catalog_product
@@ -860,7 +945,7 @@ def load_offsite(
             get_value(row, "adset_name"),
             get_value(row, "campaign_name"),
         )
-        source_product = raw_product or advertised_product or "未归类产品"
+        source_product = canonical_offsite_product_name(raw_product) or advertised_product or "未归类产品"
         product = advertised_product or source_product
         categories = resolve_categories(category_ref, product, get_value(row, "Ad_name"), get_value(row, "campaign_name"))
         category_label = " / ".join(categories)
@@ -1004,9 +1089,16 @@ def load_onsite_ads(
     daily: dict[str, dict[str, Any]],
     category_ref: dict[str, Any],
     category_daily: dict[tuple[str, str], dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     by_type: dict[str, dict[str, Any]] = {}
     by_category: dict[str, dict[str, Any]] = {}
+    by_product: dict[tuple[str, str], dict[str, Any]] = {}
+    by_product_day: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in read_csv(path):
         day = parse_date(get_value(row, "日期date"))
         if not day:
@@ -1060,6 +1152,57 @@ def load_onsite_ads(
         category_day["onsite_conversions"] += conversions
         category_day["onsite_items_sold"] += items_sold
 
+        advertised_product = infer_offsite_advertised_product(
+            category_ref,
+            get_value(row, "链接"),
+            get_value(row, "Ad Name"),
+            get_value(row, "Product ID"),
+        )
+        actual_product = resolve_reference_product(
+            category_ref,
+            get_value(row, "Product ID"),
+            get_value(row, "链接"),
+        )
+        source_link_product = clean_text(get_value(row, "链接"))
+        if not actual_product and source_link_product and source_link_product != "#N/A":
+            actual_product = source_link_product
+        if actual_product:
+            product_category = resolve_category(
+                category_ref,
+                get_value(row, "Product ID"),
+                actual_product,
+                get_value(row, "链接"),
+                get_value(row, "Ad Name"),
+                default="未归类",
+            )
+            product_row = by_product.setdefault(
+                (actual_product, product_category),
+                {
+                    "product": actual_product,
+                    "advertised_product": advertised_product,
+                    "category": product_category,
+                    "item_id": clean_text(get_value(row, "Product ID")),
+                    "onsite_spend_rmb": 0.0,
+                    "onsite_ad_gmv_rmb": 0.0,
+                },
+            )
+            product_row["onsite_spend_rmb"] += spend
+            product_row["onsite_ad_gmv_rmb"] += gmv
+            product_day_row = by_product_day.setdefault(
+                (day, actual_product, product_category),
+                {
+                    "date": day,
+                    "product": actual_product,
+                    "advertised_product": advertised_product,
+                    "category": product_category,
+                    "item_id": clean_text(get_value(row, "Product ID")),
+                    "onsite_spend_rmb": 0.0,
+                    "onsite_ad_gmv_rmb": 0.0,
+                },
+            )
+            product_day_row["onsite_spend_rmb"] += spend
+            product_day_row["onsite_ad_gmv_rmb"] += gmv
+
         ad_type = str(get_value(row, "Ads Type") or "未标记").strip() or "未标记"
         type_row = by_type.setdefault(
             ad_type,
@@ -1078,7 +1221,11 @@ def load_onsite_ads(
         row["roas"] = row["gmv_rmb"] / row["spend_rmb"] if row["spend_rmb"] else None
     rows.sort(key=lambda item: item["spend_rmb"], reverse=True)
     category_rows.sort(key=lambda item: item["spend_rmb"], reverse=True)
-    return rows, category_rows
+    product_rows = list(by_product.values())
+    product_daily_rows = list(by_product_day.values())
+    product_rows.sort(key=lambda item: item["onsite_spend_rmb"], reverse=True)
+    product_daily_rows.sort(key=lambda item: (item["date"], item["onsite_spend_rmb"]), reverse=True)
+    return rows, category_rows, product_rows, product_daily_rows
 
 
 def load_onsite_products(
@@ -1112,7 +1259,10 @@ def load_onsite_products(
             )
         product = clean_text(get_value(row, "链接") or get_value(row, "Product")) or "未命名单品"
         row_fx = parse_number(get_value(row, "汇率", "Exchange Rate", "FX")) or fx_rate
-        paid_sales_sgd = parse_number(get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"))
+        paid_sales_sgd = (
+            parse_number(get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"))
+            / ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR
+        )
         catalog_row = product_catalog.setdefault(
             (normalize_text(product), category),
             {
@@ -1147,8 +1297,14 @@ def load_onsite_products(
                 get_value(row, "SKU"),
             )
         product = str(get_value(row, "链接") or get_value(row, "Product") or "未命名单品").strip() or "未命名单品"
-        advertised_product = onsite_advertised_products.get((normalize_text(product), category), "")
-        paid_sales_sgd = parse_number(get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"))
+        item_id = clean_text(get_value(row, "Item ID"))
+        advertised_product = canonical_offsite_product_name(
+            onsite_advertised_products.get((normalize_text(product), category), "")
+        )
+        paid_sales_sgd = (
+            parse_number(get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"))
+            / ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR
+        )
         row_fx = parse_number(get_value(row, "汇率", "Exchange Rate", "FX"))
         if row_fx <= 0:
             row_fx = fx_rate
@@ -1212,6 +1368,8 @@ def load_onsite_products(
             {
                 "product": product,
                 "category": category,
+                "item_id": item_id,
+                "product_title": clean_text(get_value(row, "Product")),
                 "advertised_product": advertised_product,
                 "paid_sales_sgd": 0.0,
                 "paid_sales_rmb": 0.0,
@@ -1238,6 +1396,7 @@ def load_onsite_products(
                 "date": day,
                 "product": product,
                 "category": category,
+                "item_id": item_id,
                 "advertised_product": advertised_product,
                 "paid_sales_sgd": 0.0,
                 "paid_sales_rmb": 0.0,
@@ -1310,12 +1469,295 @@ def load_platform_units(
                 "date": day,
                 "sku": get_value(row, "SKU编码"),
                 "product": get_value(row, "产品"),
+                "product_override": category_ref.get("sku_to_onsite_product", {}).get(
+                    normalize_text(get_value(row, "SKU编码")), ""
+                ),
                 "category": category,
                 "units": units,
                 "prior_units": prior_units,
             }
         )
     return rows
+
+
+def match_platform_unit_products(
+    unit_rows: list[dict[str, Any]], product_rows: list[dict[str, Any]]
+) -> tuple[dict[tuple[str, str, str], tuple[str, str]], list[dict[str, str]]]:
+    onsite_by_category: dict[str, list[dict[str, Any]]] = {}
+    for row in product_rows:
+        onsite_by_category.setdefault(clean_text(row.get("category")) or "未归类", []).append(row)
+
+    assignments: dict[tuple[str, str], tuple[str, str]] = {}
+    gaps: list[dict[str, str]] = []
+    onsite_by_name: dict[str, list[dict[str, Any]]] = {}
+    onsite_by_item_id: dict[str, list[dict[str, Any]]] = {}
+    for row in product_rows:
+        onsite_by_name.setdefault(normalize_text(row.get("product")), []).append(row)
+        if normalize_text(row.get("item_id")):
+            onsite_by_item_id.setdefault(normalize_text(row.get("item_id")), []).append(row)
+
+    unit_sources: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for row in unit_rows:
+        unit_product = clean_text(row.get("product"))
+        category = clean_text(row.get("category")) or "未归类"
+        if not unit_product:
+            continue
+        sku_key = normalize_text(row.get("sku"))
+        source = unit_sources.setdefault(
+            (sku_key, unit_product, category),
+            {"skus": set(), "platforms": set(), "product_override": ""},
+        )
+        if clean_text(row.get("sku")):
+            source["skus"].add(clean_text(row.get("sku")))
+        if clean_text(row.get("platform")):
+            source["platforms"].add(clean_text(row.get("platform")))
+        if clean_text(row.get("product_override")):
+            source["product_override"] = clean_text(row.get("product_override"))
+
+    unit_identities = sorted(unit_sources)
+    for sku_key, unit_product, category in unit_identities:
+        source = unit_sources[(sku_key, unit_product, category)]
+        override = clean_text(source.get("product_override"))
+        if override:
+            override_key = normalize_text(override)
+            override_matches = onsite_by_item_id.get(override_key, []) or onsite_by_name.get(override_key, [])
+            if len(override_matches) == 1:
+                matched = override_matches[0]
+                assignments[(sku_key, normalize_text(unit_product), category)] = (
+                    clean_text(matched.get("product")),
+                    clean_text(matched.get("category")) or category,
+                )
+                continue
+            gaps.append(
+                {
+                    "platform_product": unit_product,
+                    "category": category,
+                    "sku": " / ".join(sorted(source["skus"])),
+                    "platform": " / ".join(sorted(source["platforms"])),
+                    "reason": "R列指定值未命中唯一站内商品",
+                    "candidate_product": override,
+                    "candidate_score": "",
+                    "second_candidate": "",
+                }
+            )
+            continue
+        candidates = onsite_by_category.get(category, [])
+        scored = sorted(
+            (
+                (
+                    product_match_score(
+                        unit_product,
+                        clean_text(candidate.get("product")),
+                        clean_text(candidate.get("product_title")),
+                    ),
+                    float(candidate.get("paid_sales_rmb") or 0.0),
+                    candidate,
+                )
+                for candidate in candidates
+            ),
+            key=lambda item: (item[0], item[1]),
+            reverse=True,
+        )
+        best_score = scored[0][0] if scored else 0.0
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        is_ambiguous = second_score > 0 and best_score - second_score < 15
+        if scored and best_score >= 640 and not is_ambiguous:
+            matched = scored[0][2]
+            assignments[(sku_key, normalize_text(unit_product), category)] = (
+                clean_text(matched.get("product")),
+                clean_text(matched.get("category")) or category,
+            )
+        else:
+            gaps.append(
+                {
+                    "platform_product": unit_product,
+                    "category": category,
+                    "sku": " / ".join(sorted(source["skus"])),
+                    "platform": " / ".join(sorted(source["platforms"])),
+                    "reason": "候选接近" if is_ambiguous else "未找到可靠候选",
+                    "candidate_product": clean_text(scored[0][2].get("product")) if scored else "",
+                    "candidate_score": f"{best_score:.1f}",
+                    "second_candidate": clean_text(scored[1][2].get("product")) if is_ambiguous else "",
+                }
+            )
+    return assignments, gaps
+
+
+def attach_platform_units_to_products(
+    unit_rows: list[dict[str, Any]],
+    product_rows: list[dict[str, Any]],
+    product_daily_rows: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    assignments, gaps = match_platform_unit_products(unit_rows, product_rows)
+    product_by_key = {
+        (clean_text(row.get("product")), clean_text(row.get("category")) or "未归类"): row
+        for row in product_rows
+    }
+    daily_by_key = {
+        (
+            clean_text(row.get("date")),
+            clean_text(row.get("product")),
+            clean_text(row.get("category")) or "未归类",
+        ): row
+        for row in product_daily_rows
+    }
+    matched_products = set(assignments.values())
+    for identity in matched_products:
+        if identity in product_by_key:
+            product_by_key[identity]["platform_units_available"] = True
+    for row in product_daily_rows:
+        identity = (clean_text(row.get("product")), clean_text(row.get("category")) or "未归类")
+        if identity in matched_products:
+            row["platform_units_available"] = True
+
+    for row in unit_rows:
+        category = clean_text(row.get("category")) or "未归类"
+        assignment = assignments.get(
+            (normalize_text(row.get("sku")), normalize_text(row.get("product")), category)
+        )
+        if not assignment:
+            continue
+        product, product_category = assignment
+        platform = clean_text(row.get("platform")).lower()
+        units_field = f"{platform}_units"
+        prior_field = f"{platform}_prior_units"
+        summary = product_by_key.get((product, product_category))
+        if summary is not None:
+            summary[units_field] = float(summary.get(units_field) or 0.0) + float(row.get("units") or 0.0)
+            summary[prior_field] = float(summary.get(prior_field) or 0.0) + float(row.get("prior_units") or 0.0)
+
+        day_key = (clean_text(row.get("date")), product, product_category)
+        daily_row = daily_by_key.get(day_key)
+        if daily_row is None:
+            source = summary or {"product": product, "category": product_category}
+            daily_row = {
+                "date": day_key[0],
+                "product": product,
+                "category": product_category,
+                "item_id": clean_text(source.get("item_id")),
+                "advertised_product": clean_text(source.get("advertised_product")),
+                "platform_units_available": True,
+                "paid_sales_sgd": 0.0,
+                "paid_sales_rmb": 0.0,
+                "paid_units": 0.0,
+                "visitors": 0.0,
+                "page_views": 0.0,
+                "add_to_cart_visitors": 0.0,
+                "product_clicks": 0.0,
+                "product_impressions": 0.0,
+            }
+            product_daily_rows.append(daily_row)
+            daily_by_key[day_key] = daily_row
+        daily_row[units_field] = float(daily_row.get(units_field) or 0.0) + float(row.get("units") or 0.0)
+        daily_row[prior_field] = float(daily_row.get(prior_field) or 0.0) + float(row.get("prior_units") or 0.0)
+
+    product_daily_rows.sort(key=lambda item: (item["date"], item.get("paid_sales_rmb", 0.0)), reverse=True)
+    return gaps
+
+
+def build_offsite_product_mapping_gaps(
+    category_ref: dict[str, Any], product_rows: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    assignments = assign_onsite_products_to_offsite_catalog(category_ref, product_rows)
+    assigned_products = {
+        normalize_text(canonical_offsite_product_name(product)) for product in assignments.values()
+    }
+    manual_targets = category_ref.get("offsite_product_to_onsite_product", {})
+    gaps: list[dict[str, str]] = []
+    for catalog_product in category_ref.get("offsite_products", []):
+        catalog_key = normalize_text(catalog_product)
+        canonical_key = normalize_text(canonical_offsite_product_name(catalog_product))
+        if canonical_key in assigned_products:
+            continue
+        scored = sorted(
+            (
+                (
+                    product_match_score(
+                        catalog_product,
+                        clean_text(row.get("product")),
+                        clean_text(row.get("product_title")),
+                    ),
+                    float(row.get("paid_sales_rmb") or 0.0),
+                    row,
+                )
+                for row in product_rows
+            ),
+            key=lambda item: (item[0], item[1]),
+            reverse=True,
+        )
+        manual_target = clean_text(manual_targets.get(catalog_key))
+        gaps.append(
+            {
+                "offsite_product": catalog_product,
+                "reason": "U列指定值未命中唯一站内商品" if manual_target else "未找到可靠唯一映射",
+                "manual_target": manual_target,
+                "candidate_product": clean_text(scored[0][2].get("product")) if scored and scored[0][0] else "",
+                "candidate_category": clean_text(scored[0][2].get("category")) if scored and scored[0][0] else "",
+                "candidate_item_id": clean_text(scored[0][2].get("item_id")) if scored and scored[0][0] else "",
+                "candidate_score": f"{scored[0][0]:.1f}" if scored and scored[0][0] else "",
+                "second_candidate": clean_text(scored[1][2].get("product")) if len(scored) > 1 and scored[1][0] else "",
+            }
+        )
+    return gaps
+
+
+def write_product_mapping_gaps(payload: dict[str, Any]) -> tuple[Path, Path]:
+    unit_path = OUTPUT_DIR / "skt_platform_unit_mapping_gaps.csv"
+    offsite_path = OUTPUT_DIR / "skt_offsite_product_mapping_gaps.csv"
+    reports = (
+        (
+            unit_path,
+            payload.get("product_mapping_quality", {}).get("platform_unit_unmatched", []),
+            (
+                "platform",
+                "sku",
+                "platform_product",
+                "category",
+                "reason",
+                "candidate_product",
+                "second_candidate",
+                "candidate_score",
+                "维护位置",
+            ),
+            "品类表 R列：填写对应站内商品名或 Item ID",
+        ),
+        (
+            offsite_path,
+            payload.get("product_mapping_quality", {}).get("offsite_product_unmatched", []),
+            (
+                "offsite_product",
+                "reason",
+                "manual_target",
+                "candidate_product",
+                "candidate_category",
+                "candidate_item_id",
+                "candidate_score",
+                "second_candidate",
+                "维护位置",
+            ),
+            "品类表 U列：填写对应站内商品名或 Item ID",
+        ),
+    )
+    for path, rows, fieldnames, maintenance in reports:
+        with path.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({**row, "维护位置": maintenance})
+    return unit_path, offsite_path
+
+
+def compact_sparse_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for row in rows:
+        compacted.append(
+            {
+                key: value
+                for key, value in row.items()
+                if value not in (None, "", 0, 0.0, False)
+            }
+        )
+    return compacted
 
 
 def add_category_derived(row: dict[str, Any]) -> dict[str, Any]:
@@ -1538,7 +1980,12 @@ def build_payload() -> dict[str, Any]:
         offsite_product_daily_rows,
         offsite_audience_daily_rows,
     ) = load_offsite(paths["offsite"], daily, category_ref, category_daily)
-    onsite_ad_type_rows, onsite_ad_category_rows = load_onsite_ads(
+    (
+        onsite_ad_type_rows,
+        onsite_ad_category_rows,
+        onsite_ad_product_rows,
+        onsite_ad_product_daily_rows,
+    ) = load_onsite_ads(
         paths["onsite_ads"], daily, category_ref, category_daily
     )
     product_category_rows, product_rows, product_daily_rows = load_onsite_products(
@@ -1547,6 +1994,8 @@ def build_payload() -> dict[str, Any]:
     unit_rows = load_platform_units(paths["sp_units"], "SP", category_ref, category_daily) + load_platform_units(
         paths["tt_units"], "TT", category_ref, category_daily
     )
+    unit_mapping_gaps = attach_platform_units_to_products(unit_rows, product_rows, product_daily_rows)
+    offsite_mapping_gaps = build_offsite_product_mapping_gaps(category_ref, product_rows)
     redistribute_catalog_offsite(category_daily, category_ref)
     daily_rows = finalize_daily_rows(daily)
     category_daily_rows = [add_category_derived(row) for row in sorted(category_daily.values(), key=lambda item: (item["date"], item["category"]))]
@@ -1563,17 +2012,19 @@ def build_payload() -> dict[str, Any]:
             for store, values in sorted(store_rows.items(), key=lambda item: item[1]["gmv_rmb"], reverse=True)
         ],
         "category_rows": category_rows[:60],
-        "category_daily_rows": category_daily_rows,
+        "category_daily_rows": compact_sparse_rows(category_daily_rows),
         "product_category_rows": product_category_rows[:60],
         "product_rows": product_rows[:80],
-        "product_daily_rows": product_daily_rows,
+        "product_daily_rows": compact_sparse_rows(product_daily_rows),
         "offsite_product_rows": offsite_product_rows[:50],
-        "offsite_product_daily_rows": offsite_product_daily_rows,
+        "offsite_product_daily_rows": compact_sparse_rows(offsite_product_daily_rows),
         "offsite_category_rows": offsite_category_rows[:50],
         "offsite_type_rows": offsite_type_rows,
-        "offsite_audience_daily_rows": offsite_audience_daily_rows,
+        "offsite_audience_daily_rows": compact_sparse_rows(offsite_audience_daily_rows),
         "onsite_ad_type_rows": onsite_ad_type_rows,
         "onsite_ad_category_rows": onsite_ad_category_rows[:50],
+        "onsite_ad_product_rows": onsite_ad_product_rows,
+        "onsite_ad_product_daily_rows": compact_sparse_rows(onsite_ad_product_daily_rows),
         "category_reference": {
             "category_count": category_ref["category_count"],
             "item_count": category_ref["item_count"],
@@ -1590,6 +2041,16 @@ def build_payload() -> dict[str, Any]:
             ),
         },
         "unit_rows_sample_size": len(unit_rows),
+        "product_mapping_quality": {
+            "platform_unit_product_count": len(
+                {(clean_text(row.get("product")), clean_text(row.get("category"))) for row in unit_rows}
+            ),
+            "platform_unit_unmatched_count": len(unit_mapping_gaps),
+            "platform_unit_unmatched": unit_mapping_gaps,
+            "offsite_product_count": len(category_ref.get("offsite_products", [])),
+            "offsite_product_unmatched_count": len(offsite_mapping_gaps),
+            "offsite_product_unmatched": offsite_mapping_gaps,
+        },
         "field_map": [
             {
                 "module": "平台GMV-SP",
@@ -1617,7 +2078,7 @@ def build_payload() -> dict[str, Any]:
                 "sheet": "站内广告",
                 "date": "日期date",
                 "metric": "广告花费-RMB / 广告GMV-RMB / Impression / Clicks / Conversions",
-                "normalization": "使用源表 RMB 字段",
+                "normalization": "使用源表 RMB 字段；商品层优先按 Product ID 匹配品类表 Item ID，链接名称兜底",
             },
             {
                 "module": "站内商品",
@@ -1630,15 +2091,15 @@ def build_payload() -> dict[str, Any]:
                 "module": "品类映射",
                 "sheet": "品类表",
                 "date": "无",
-                "metric": "Item ID / 单品 / SKU / 产品名 / 品类 / 汇率 / T列站外投放产品",
-                "normalization": "用于 SP 汇率、品类归因及站外产品清单；T列一对一匹配站内商品，未命中但站内有数的商品标记为未投放",
+                "metric": "Item ID / 单品 / SKU / 产品名 / 品类 / 汇率 / T列站外投放产品 / R-U列人工映射",
+                "normalization": "用于 SP 汇率、品类归因及站外产品清单；R列指定 SKU 对应站内商品，U列指定 T列站外产品对应站内商品，可填商品名或 Item ID",
             },
             {
                 "module": "品类销量补充",
                 "sheet": "SP-销量 / TT-销量",
                 "date": "日期",
                 "metric": "SKU编码 / 销量 / 上月同期销售 / 品类",
-                "normalization": "按 SKU/产品/品类汇总到品类日维度，用于 SP/TT 销量结构与环比判断",
+                "normalization": "按 SKU/产品/品类汇总到品类和单品日维度；模糊商品由品类表 R列指定站内商品",
             },
         ],
     }
@@ -2299,6 +2760,143 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     tbody tr:nth-child(even) td {
       background: rgba(238, 245, 242, 0.42);
     }
+    .category-detail-table th:first-child,
+    .category-detail-table td:first-child {
+      width: 42px;
+      padding-right: 4px;
+      padding-left: 4px;
+      text-align: center;
+    }
+    .category-detail-table th:nth-child(2),
+    .category-detail-table td:nth-child(2) {
+      text-align: left;
+    }
+    .category-section-toggle {
+      display: inline-grid;
+      flex: 0 0 auto;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      background: #fff;
+      color: var(--accent);
+      font: inherit;
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .category-section-toggle:hover {
+      border-color: var(--accent);
+      background: #dbeafe;
+    }
+    .category-section-toggle span {
+      transition: transform 160ms ease;
+    }
+    .category-section-toggle[aria-expanded="false"] span {
+      transform: rotate(180deg);
+    }
+    #categoryTable[hidden] {
+      display: none;
+    }
+    .category-row-toggle {
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid #bfdbfe;
+      border-radius: 5px;
+      background: #fff;
+      color: var(--accent);
+      font: inherit;
+      font-size: 17px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .category-row-toggle:hover {
+      border-color: var(--accent);
+      background: #dbeafe;
+    }
+    .category-row-toggle[aria-expanded="true"] span {
+      transform: rotate(90deg);
+    }
+    .category-row-toggle span {
+      transition: transform 160ms ease;
+    }
+    .category-row-toggle:disabled {
+      visibility: hidden;
+      cursor: default;
+    }
+    .category-summary-name {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .category-summary-name strong {
+      color: var(--ink);
+      font-weight: 900;
+    }
+    .category-summary-name span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .category-products-row[hidden] {
+      display: none;
+    }
+    .category-products-row > td {
+      padding: 0;
+      background: #f8fbff !important;
+      text-align: left;
+      white-space: normal;
+    }
+    .category-products-detail {
+      padding: 8px 12px 12px 46px;
+      border-bottom: 1px solid #bfdbfe;
+    }
+    .category-products-grid {
+      display: grid;
+      grid-template-columns: minmax(190px, 1.8fr) repeat(15, minmax(78px, 1fr));
+      min-width: 1550px;
+      align-items: stretch;
+    }
+    .category-products-grid > div {
+      min-width: 0;
+      padding: 8px 9px;
+      border-bottom: 1px solid #dbe7f5;
+      text-align: right;
+    }
+    .category-products-grid > div:nth-child(16n + 1) {
+      text-align: left;
+    }
+    .category-products-head > div {
+      color: var(--muted);
+      background: #edf5ff;
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .category-products-body:last-child > div {
+      border-bottom: 0;
+    }
+    .category-product-name {
+      position: relative;
+      padding-left: 18px !important;
+      color: var(--ink);
+      font-weight: 850;
+      overflow-wrap: anywhere;
+    }
+    .category-product-name::before {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 2px;
+      width: 9px;
+      border-top: 1px solid #93b4df;
+    }
     .audience-table-wrap {
       max-height: none;
     }
@@ -2545,11 +3143,104 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .offsite-product-table th:first-child,
     .offsite-product-table td:first-child {
+      width: 42px;
+      padding-right: 4px;
+      padding-left: 4px;
+      text-align: center;
+    }
+    .offsite-product-table th:nth-child(2),
+    .offsite-product-table td:nth-child(2) {
       width: 18%;
+      text-align: left;
     }
     .offsite-product-table .product-cell {
       min-width: 0;
       max-width: none;
+    }
+    .offsite-product-toggle-row td {
+      padding: 0;
+      border-bottom-color: #bfdbfe;
+      background: #eff6ff;
+      text-align: left;
+    }
+    .offsite-product-toggle-row > td:first-child {
+      width: 42px;
+      padding: 0;
+      text-align: center;
+    }
+    .offsite-product-toggle {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      width: 100%;
+      min-height: 34px;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 900;
+      text-align: left;
+      cursor: pointer;
+    }
+    .offsite-product-toggle:hover {
+      background: #dbeafe;
+    }
+    .offsite-product-toggle-icon {
+      display: inline-block;
+      width: 14px;
+      font-size: 16px;
+      line-height: 1;
+      transition: transform 160ms ease;
+    }
+    .offsite-product-toggle[aria-expanded="false"] .offsite-product-toggle-icon {
+      transform: rotate(-90deg);
+    }
+    .offsite-product-group-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .offsite-product-restore {
+      flex: 0 0 auto;
+      min-height: 26px;
+      padding: 4px 8px;
+      border: 1px solid #9bbce8;
+      border-radius: 5px;
+      background: #fff;
+      color: var(--accent);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 850;
+      cursor: pointer;
+    }
+    .offsite-product-restore:hover {
+      background: #dbeafe;
+    }
+    .offsite-product-row-toggle {
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid #bfdbfe;
+      border-radius: 5px;
+      background: #fff;
+      color: var(--accent);
+      font: inherit;
+      font-size: 16px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .offsite-product-row-toggle:hover {
+      border-color: var(--accent);
+      background: #dbeafe;
+    }
+    .offsite-product-data-row[hidden] {
+      display: none;
     }
     .offsite-product-group-row td {
       padding: 9px 10px;
@@ -2584,8 +3275,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       font-weight: 800;
       text-align: center;
     }
-    .offsite-product-table th:not(:first-child),
-    .offsite-product-table td:not(:first-child) {
+    .offsite-product-table th:not(:first-child):not(:nth-child(2)),
+    .offsite-product-table td:not(:first-child):not(:nth-child(2)) {
       text-align: right;
     }
     @media (max-width: 1180px) {
@@ -2876,8 +3567,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="section-head">
         <div>
           <h2>品类经营明细</h2>
-          <p class="section-note">用于判断哪些品类是规模盘、投放盘、效率盘或承接短板。</p>
+          <p class="section-note">点击品类左侧箭头可展开当前品类全部商品，并查看商品 GMV、销量、访客、加购和转化表现。</p>
         </div>
+        <button class="category-section-toggle" id="categorySectionToggle" type="button" aria-controls="categoryTable" aria-expanded="true" aria-label="收起品类经营明细" title="收起品类经营明细">
+          <span aria-hidden="true">⌃</span>
+        </button>
       </div>
       <div class="table-wrap" id="categoryTable"></div>
     </section>
@@ -3235,6 +3929,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function tableMetricHtml(current, previous, formatter, options = {}) {
       const compareClass = metricDeltaClass(current, previous);
       return `<div class="table-primary">${formatter(current)}</div><div class="table-compare ${compareClass}">环比 ${deltaText(current, previous)}</div>`;
+    }
+    function tableAvailableMetricHtml(current, previous, formatter, currentAvailable, previousAvailable, options = {}) {
+      if (!currentAvailable) return '<span class="not-advertised-value">-</span>';
+      if (!previousAvailable) {
+        return `<div class="table-primary">${formatter(current)}</div><div class="table-compare">环比 无上期映射</div>`;
+      }
+      return tableMetricHtml(current, previous, formatter, options);
+    }
+    function tableValueHtml(value, formatter) {
+      return `<div class="table-primary">${formatter(value)}</div>`;
+    }
+    function tableChangeOnlyHtml(current, previous, currentAvailable, previousAvailable) {
+      if (!currentAvailable) return '<span class="not-advertised-value">-</span>';
+      const compareClass = previousAvailable ? metricDeltaClass(current, previous) : '';
+      const changeText = previousAvailable ? deltaText(current, previous) : '无上期数据';
+      return `<div class="table-compare ${compareClass}">${changeText}</div>`;
     }
     function dateSeries(start, end) {
       const days = [];
@@ -3727,10 +4437,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           if (!byProduct.has(key)) byProduct.set(key, {
             product: row.product || '未命名单品',
             category: row.category || '未归类',
+            item_id: row.item_id || '',
             advertised_product: row.advertised_product || '',
+            platform_units_available: Boolean(row.platform_units_available),
             paid_sales_sgd: 0,
             paid_sales_rmb: 0,
             paid_units: 0,
+            sp_units: 0,
+            sp_prior_units: 0,
+            tt_units: 0,
+            tt_prior_units: 0,
             visitors: 0,
             page_views: 0,
             add_to_cart_visitors: 0,
@@ -3738,7 +4454,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             product_impressions: 0,
           });
           const target = byProduct.get(key);
-          ['paid_sales_sgd', 'paid_sales_rmb', 'paid_units', 'visitors', 'page_views', 'add_to_cart_visitors', 'product_clicks', 'product_impressions']
+          target.platform_units_available = target.platform_units_available || Boolean(row.platform_units_available);
+          ['paid_sales_sgd', 'paid_sales_rmb', 'paid_units', 'sp_units', 'sp_prior_units', 'tt_units', 'tt_prior_units', 'visitors', 'page_views', 'add_to_cart_visitors', 'product_clicks', 'product_impressions']
             .forEach(field => { target[field] += n(row[field]); });
         });
       const rows = [...byProduct.values()];
@@ -3749,9 +4466,63 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         row.add_to_cart_rate = row.visitors ? row.add_to_cart_visitors / row.visitors : null;
         row.ctr = row.product_impressions ? row.product_clicks / row.product_impressions : null;
         row.gmv_share = productSalesTotal ? row.paid_sales_rmb / productSalesTotal : null;
+        row.platform_units = n(row.sp_units) + n(row.tt_units);
+        row.prior_platform_units = n(row.sp_prior_units) + n(row.tt_prior_units);
+        row.unit_growth = row.prior_platform_units
+          ? (row.platform_units - row.prior_platform_units) / row.prior_platform_units
+          : null;
       });
       rows.sort((a, b) => n(b.paid_sales_rmb) - n(a.paid_sales_rmb));
       return rows;
+    }
+    function selectedOnsiteAdProductRows(period, rangeName = 'current') {
+      if (period?.invalid) return [];
+      const range = period?.[rangeName] || period?.current;
+      const source = (DATA.onsite_ad_product_daily_rows && DATA.onsite_ad_product_daily_rows.length)
+        ? DATA.onsite_ad_product_daily_rows
+        : (DATA.onsite_ad_product_rows || []);
+      return source.filter(row => rowInPeriod(row, range));
+    }
+    function enrichProductMediaRows(productRows, onsiteAdRows, offsiteRows) {
+      const onsiteByProduct = new Map();
+      (onsiteAdRows || []).forEach(row => {
+        const key = `${row.category || '未归类'}||${normalizeProductKey(row.product)}`;
+        if (!onsiteByProduct.has(key)) onsiteByProduct.set(key, { spend: 0, gmv: 0 });
+        const target = onsiteByProduct.get(key);
+        target.spend += n(row.onsite_spend_rmb);
+        target.gmv += n(row.onsite_ad_gmv_rmb);
+      });
+      const offsiteByAdvertisedProduct = new Map();
+      (offsiteRows || []).filter(row => row.advertised_product).forEach(row => {
+        const key = normalizeProductKey(row.advertised_product);
+        if (!offsiteByAdvertisedProduct.has(key)) offsiteByAdvertisedProduct.set(key, { spend: 0, gmv: 0 });
+        const target = offsiteByAdvertisedProduct.get(key);
+        target.spend += n(row.spend_rmb);
+        target.gmv += n(row.purchase_value_rmb);
+      });
+      return (productRows || []).map(source => {
+        const row = { ...source };
+        const onsite = onsiteByProduct.get(`${row.category || '未归类'}||${normalizeProductKey(row.product)}`);
+        const offsite = row.advertised_product
+          ? offsiteByAdvertisedProduct.get(normalizeProductKey(row.advertised_product)) || { spend: 0, gmv: 0 }
+          : null;
+        row.onsite_media_available = Boolean(onsite);
+        row.onsite_spend_rmb = onsite ? onsite.spend : null;
+        row.onsite_ad_gmv_rmb = onsite ? onsite.gmv : null;
+        row.onsite_roas = onsite && onsite.spend ? onsite.gmv / onsite.spend : null;
+        row.offsite_media_available = Boolean(row.advertised_product);
+        row.offsite_spend_rmb = offsite ? offsite.spend : null;
+        row.offsite_purchase_value_rmb = offsite ? offsite.gmv : null;
+        row.offsite_roas = offsite && offsite.spend ? offsite.gmv / offsite.spend : null;
+        row.media_available = row.onsite_media_available || row.offsite_media_available;
+        row.media_spend_rmb = row.media_available ? n(row.onsite_spend_rmb) + n(row.offsite_spend_rmb) : null;
+        row.media_sales_rmb = row.media_available ? n(row.onsite_ad_gmv_rmb) + n(row.offsite_purchase_value_rmb) : null;
+        row.media_roas = row.media_spend_rmb ? row.media_sales_rmb / row.media_spend_rmb : null;
+        row.media_spend_ratio = row.media_available && n(row.paid_sales_rmb)
+          ? row.media_spend_rmb / n(row.paid_sales_rmb)
+          : null;
+        return row;
+      });
     }
     function selectedOffsiteProductRows(period, rangeName = 'current') {
       if (period?.invalid) return [];
@@ -3833,6 +4604,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         });
       return byAdvertisedProduct;
     }
+    function aggregateAdvertisedOnsiteSpendRows(rows) {
+      const byAdvertisedProduct = new Map();
+      (rows || [])
+        .filter(row => row.advertised_product && n(row.onsite_spend_rmb) !== 0)
+        .forEach(row => {
+          const key = normalizeProductKey(row.advertised_product);
+          if (!byAdvertisedProduct.has(key)) byAdvertisedProduct.set(key, {
+            product: row.advertised_product,
+            category: row.category || '未归类',
+            onsite_spend_rmb: 0,
+          });
+          byAdvertisedProduct.get(key).onsite_spend_rmb += n(row.onsite_spend_rmb);
+        });
+      return byAdvertisedProduct;
+    }
     function aggregateAdvertisedOffsiteRows(rows) {
       const byAdvertisedProduct = new Map();
       (rows || [])
@@ -3889,7 +4675,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         });
       return byProduct;
     }
-    function offsiteDisplayRow(key, status, offsiteRow, onsiteRow, identity, productGmvTotal, offsiteSpendTotal) {
+    function offsiteDisplayRow(key, status, offsiteRow, onsiteRow, onsiteSpendRow, identity, productGmvTotal, offsiteSpendTotal) {
       const carriesOffsiteMetrics = status !== 'unadvertised';
       const product = carriesOffsiteMetrics
         ? (offsiteRow?.product || onsiteRow?.product || identity?.product || '未归类产品')
@@ -3903,6 +4689,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         source_product: onsiteRow?.source_product || onsiteRow?.product || '',
         sp_product_gmv: n(onsiteRow?.paid_sales_rmb),
         visitors: n(onsiteRow?.visitors),
+        onsite_spend_rmb: onsiteSpendRow ? n(onsiteSpendRow.onsite_spend_rmb) : null,
+        onsite_spend_available: Boolean(onsiteSpendRow),
       };
       offsiteMetricFields.forEach(field => { row[field] = carriesOffsiteMetrics ? n(offsiteRow?.[field]) : 0; });
       row.gmv_share = productGmvTotal ? row.sp_product_gmv / productGmvTotal : null;
@@ -3910,11 +4698,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       row.roas = carriesOffsiteMetrics && row.spend_rmb ? row.purchase_value_rmb / row.spend_rmb : null;
       return row;
     }
-    function buildOffsiteProductView(currentOffsiteRows, compareOffsiteRows, currentProductRows, compareProductRows) {
+    function buildOffsiteProductView(
+      currentOffsiteRows,
+      compareOffsiteRows,
+      currentProductRows,
+      compareProductRows,
+      currentOnsiteAdProductRows,
+      compareOnsiteAdProductRows,
+    ) {
       const currentOffsite = aggregateAdvertisedOffsiteRows(currentOffsiteRows);
       const compareOffsite = aggregateAdvertisedOffsiteRows(compareOffsiteRows);
       const currentAdvertisedOnsite = aggregateAdvertisedOnsiteRows(currentProductRows);
       const compareAdvertisedOnsite = aggregateAdvertisedOnsiteRows(compareProductRows);
+      const currentAdvertisedOnsiteSpend = aggregateAdvertisedOnsiteSpendRows(currentOnsiteAdProductRows);
+      const compareAdvertisedOnsiteSpend = aggregateAdvertisedOnsiteSpendRows(compareOnsiteAdProductRows);
       const currentUnmatchedOffsite = aggregateUnmatchedOffsiteRow(currentOffsiteRows);
       const compareUnmatchedOffsite = aggregateUnmatchedOffsiteRow(compareOffsiteRows);
       const currentUnadvertised = indexUnadvertisedOnsiteRows(currentProductRows);
@@ -3935,21 +4732,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         currentUnadvertised.get(key) || compareUnadvertised.get(key),
       ));
 
-      function rowsForRange(offsiteIndex, advertisedOnsiteIndex, unadvertisedIndex, productRows, offsiteRows, unmatchedOffsiteRow) {
+      function rowsForRange(offsiteIndex, advertisedOnsiteIndex, advertisedOnsiteSpendIndex, unadvertisedIndex, productRows, offsiteRows, unmatchedOffsiteRow) {
         const productGmvTotal = sum(productRows || [], 'paid_sales_rmb');
         const offsiteSpendTotal = sum(offsiteRows || [], 'spend_rmb');
         const advertisedRows = [...advertisedKeys].map(key => offsiteDisplayRow(
-          key, 'advertised', offsiteIndex.get(key), advertisedOnsiteIndex.get(key),
+          key, 'advertised', offsiteIndex.get(key), advertisedOnsiteIndex.get(key), advertisedOnsiteSpendIndex.get(key),
           advertisedIdentity.get(key), productGmvTotal, offsiteSpendTotal,
         ));
         const unadvertisedRows = [...unadvertisedKeys].map(key => offsiteDisplayRow(
-          key, 'unadvertised', null, unadvertisedIndex.get(key),
+          key, 'unadvertised', null, unadvertisedIndex.get(key), null,
           unadvertisedIdentity.get(key), productGmvTotal, offsiteSpendTotal,
         ));
         const unmatchedRows = (currentUnmatchedOffsite || compareUnmatchedOffsite)
           ? [offsiteDisplayRow(
               'unmatched-offsite', 'unmatched',
-              unmatchedOffsiteRow,
+              unmatchedOffsiteRow, null,
               null, currentUnmatchedOffsite || compareUnmatchedOffsite,
               productGmvTotal, offsiteSpendTotal,
             )]
@@ -3961,11 +4758,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
       return {
         current: rowsForRange(
-          currentOffsite, currentAdvertisedOnsite, currentUnadvertised,
+          currentOffsite, currentAdvertisedOnsite, currentAdvertisedOnsiteSpend, currentUnadvertised,
           currentProductRows, currentOffsiteRows, currentUnmatchedOffsite,
         ),
         compare: rowsForRange(
-          compareOffsite, compareAdvertisedOnsite, compareUnadvertised,
+          compareOffsite, compareAdvertisedOnsite, compareAdvertisedOnsiteSpend, compareUnadvertised,
           compareProductRows, compareOffsiteRows, compareUnmatchedOffsite,
         ),
       };
@@ -4207,26 +5004,76 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         byId('insightList').innerHTML = insights.map(text => `<li>${escapeHtml(text)}</li>`).join('');
       }
     }
-    function renderCategoryTable(categoryRows, compareCategoryRows) {
+    function renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows) {
       const rows = categoryRows.slice(0, 40);
       if (!rows.length) {
         byId('categoryTable').innerHTML = '<div class="empty-state">当前周期暂无品类数据</div>';
         return;
       }
       const compareByCategory = new Map((compareCategoryRows || []).map(row => [row.category, row]));
+      const productsByCategory = new Map();
+      const compareProductsByKey = new Map();
+      (productRows || []).forEach(row => {
+        const category = row.category || '未归类';
+        if (!productsByCategory.has(category)) productsByCategory.set(category, []);
+        productsByCategory.get(category).push(row);
+      });
+      (compareProductRows || []).forEach(row => {
+        compareProductsByKey.set(`${row.category || '未归类'}||${row.product || '未命名单品'}`, row);
+      });
+      const productDetailHtml = (category, categoryProducts) => {
+        const unavailable = '<span class="not-advertised-value">-</span>';
+        return `
+          <div class="category-products-detail">
+            <div class="category-products-grid category-products-head">
+              <div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>SP销量</div><div>TT销量</div><div>销量增幅</div><div>访问</div><div>加购率</div><div>支付件转化</div><div>站内花费</div><div>站内ROAS</div><div>站外花费RMB</div><div>站外ROAS</div><div>总媒体花费</div><div>综合ROAS</div><div>媒体/销售额</div>
+            </div>
+            ${categoryProducts.map(product => {
+              const previous = compareProductsByKey.get(`${category}||${product.product || '未命名单品'}`) || {};
+              return `
+                <div class="category-products-grid category-products-body">
+                  <div class="category-product-name">${escapeHtml(product.product || '未命名单品')}</div>
+                  <div>${tableMetricHtml(product.paid_sales_rmb, previous.paid_sales_rmb, money)}</div>
+                  <div>${tableMetricHtml(product.gmv_share, previous.gmv_share, ratio, { neutral: true })}</div>
+                  <div>${tableAvailableMetricHtml(product.sp_units, previous.sp_units, value => fmt0.format(n(value)), product.platform_units_available, previous.platform_units_available)}</div>
+                  <div>${tableAvailableMetricHtml(product.tt_units, previous.tt_units, value => fmt0.format(n(value)), product.platform_units_available, previous.platform_units_available)}</div>
+                  <div>${product.platform_units_available ? tableAvailableMetricHtml(product.unit_growth, previous.unit_growth, ratio, true, previous.platform_units_available) : unavailable}</div>
+                  <div>${tableMetricHtml(product.visitors, previous.visitors, value => fmt0.format(n(value)))}</div>
+                  <div>${tableMetricHtml(product.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</div>
+                  <div>${tableMetricHtml(product.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</div>
+                  <div>${tableAvailableMetricHtml(product.onsite_spend_rmb, previous.onsite_spend_rmb, money, product.onsite_media_available, previous.onsite_media_available, { neutral: true })}</div>
+                  <div>${tableAvailableMetricHtml(product.onsite_roas, previous.onsite_roas, roas, product.onsite_media_available, previous.onsite_media_available)}</div>
+                  <div>${tableAvailableMetricHtml(product.offsite_spend_rmb, previous.offsite_spend_rmb, money, product.offsite_media_available, previous.offsite_media_available, { neutral: true })}</div>
+                  <div>${tableAvailableMetricHtml(product.offsite_roas, previous.offsite_roas, roas, product.offsite_media_available, previous.offsite_media_available)}</div>
+                  <div>${tableAvailableMetricHtml(product.media_spend_rmb, previous.media_spend_rmb, money, product.media_available, previous.media_available, { neutral: true })}</div>
+                  <div>${tableAvailableMetricHtml(product.media_roas, previous.media_roas, roas, product.media_available, previous.media_available)}</div>
+                  <div>${tableAvailableMetricHtml(product.media_spend_ratio, previous.media_spend_ratio, ratio, product.media_available, previous.media_available, { inverse: true })}</div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+      };
       byId('categoryTable').innerHTML = `
-        <table>
+        <table class="category-detail-table">
           <thead>
             <tr>
-              <th>品类</th><th>商品销售额RMB</th><th>销售占比</th><th>SP销量</th><th>TT销量</th><th>销量增幅</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th>
+              <th aria-label="展开商品"></th><th>品类</th><th>商品销售额RMB</th><th>销售占比</th><th>SP销量</th><th>TT销量</th><th>销量增幅</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th>
             </tr>
           </thead>
           <tbody>
-            ${rows.map(row => {
+            ${rows.map((row, index) => {
               const previous = compareByCategory.get(row.category) || {};
+              const categoryProducts = productsByCategory.get(row.category) || [];
+              const detailId = `categoryProducts-${index}`;
               return `
-                <tr>
-                  <td>${row.category}</td>
+                <tr class="category-summary-row">
+                  <td>
+                    <button class="category-row-toggle" type="button" data-category-row-key="${escapeHtml(row.category)}" aria-controls="${detailId}" aria-expanded="false" aria-label="展开${escapeHtml(row.category)}商品" title="展开商品" ${categoryProducts.length ? '' : 'disabled'}>
+                      <span aria-hidden="true">›</span>
+                    </button>
+                  </td>
+                  <td><div class="category-summary-name"><strong>${escapeHtml(row.category)}</strong><span>${categoryProducts.length} 个商品</span></div></td>
                   <td>${tableMetricHtml(row.product_paid_sales_rmb, previous.product_paid_sales_rmb, money)}</td>
                   <td>${tableMetricHtml(row.sales_share, previous.sales_share, ratio, { neutral: true })}</td>
                   <td>${tableMetricHtml(row.sp_units, previous.sp_units, value => fmt0.format(n(value)))}</td>
@@ -4243,11 +5090,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td>${tableMetricHtml(row.media_roas, previous.media_roas, roas)}</td>
                   <td>${tableMetricHtml(row.media_spend_ratio, previous.media_spend_ratio, ratio, { inverse: true })}</td>
                 </tr>
+                <tr class="category-products-row" id="${detailId}" data-category-products-key="${escapeHtml(row.category)}" hidden>
+                  <td colspan="17">${categoryProducts.length ? productDetailHtml(row.category, categoryProducts) : ''}</td>
+                </tr>
               `;
             }).join('')}
           </tbody>
         </table>
       `;
+      setupCategoryRowToggles();
     }
     function renderOffsiteProductTable(offsiteProductRows, compareOffsiteProductRows) {
       const rows = offsiteProductRows || [];
@@ -4265,13 +5116,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const advertised = status === 'advertised';
         const unmatched = status === 'unmatched';
         const carriesOffsiteMetrics = advertised || unmatched;
+        const previousOnsiteSpendAvailable = Boolean(previous.onsite_spend_available);
         return `
-          <tr>
+          <tr class="offsite-product-data-row" data-offsite-product-status="${status}">
+            <td><button class="offsite-product-row-toggle" type="button" data-offsite-product-row-key="${escapeHtml(row.key)}" title="隐藏此产品" aria-label="隐藏${escapeHtml(row.product)}">−</button></td>
             <td><div class="product-cell">${escapeHtml(row.product)}</div></td>
             <td>${unmatched ? unavailable : tableMetricHtml(row.sp_product_gmv, previous.sp_product_gmv, money)}</td>
             <td>${unmatched ? unavailable : tableMetricHtml(row.gmv_share, previous.gmv_share, ratio)}</td>
             <td>${carriesOffsiteMetrics ? tableMetricHtml(row.spend_rmb, previous.spend_rmb, money, { neutral: true }) : unavailable}</td>
             <td>${carriesOffsiteMetrics ? tableMetricHtml(row.spend_share, previous.spend_share, ratio, { neutral: true }) : unavailable}</td>
+            <td>${advertised && row.onsite_spend_available ? tableValueHtml(row.onsite_spend_rmb, money) : unavailable}</td>
+            <td>${advertised ? tableChangeOnlyHtml(row.onsite_spend_rmb, previous.onsite_spend_rmb, row.onsite_spend_available, previousOnsiteSpendAvailable) : unavailable}</td>
             <td>${carriesOffsiteMetrics ? tableMetricHtml(row.purchase_value_rmb, previous.purchase_value_rmb, money) : unavailable}</td>
             <td>${carriesOffsiteMetrics ? tableMetricHtml(row.roas, previous.roas, roas) : unavailable}</td>
             <td>${carriesOffsiteMetrics ? tableMetricHtml(row.impressions, previous.impressions, value => fmt0.format(n(value))) : unavailable}</td>
@@ -4283,14 +5138,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       }).join('');
       byId('offsiteProductTable').innerHTML = `
         <table class="offsite-product-table">
-          <thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>
+          <thead><tr><th aria-label="行操作"></th><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站内花费</th><th>环比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>
           <tbody>
-            ${advertisedRows.length ? `<tr class="offsite-product-group-row"><td colspan="11"><strong>已投放产品</strong><span>来自品类表 T 列 · ${advertisedRows.length} 个</span></td></tr>${renderRows(advertisedRows, 'advertised')}` : ''}
-            ${unmatchedRows.length ? `<tr class="offsite-product-group-row unmatched"><td colspan="11"><strong>待补产品映射</strong><span>站外源表产品为空或未命中 T 列，花费已保留</span></td></tr>${renderRows(unmatchedRows, 'unmatched')}` : ''}
-            ${unadvertisedRows.length ? `<tr class="offsite-product-group-row unadvertised"><td colspan="11"><strong>未投放产品</strong><span>站内有经营数据但未命中品类表 T 列 · ${unadvertisedRows.length} 个</span></td></tr>${renderRows(unadvertisedRows, 'unadvertised')}` : ''}
+            <tr class="offsite-product-toggle-row offsite-product-group-row">
+              <td colspan="14">
+                <div class="offsite-product-group-actions">
+                <button class="offsite-product-toggle" id="offsiteProductToggle" type="button" aria-controls="offsiteProductTable" aria-expanded="true" title="收起产品明细">
+                  <span class="offsite-product-toggle-icon" aria-hidden="true">⌄</span>
+                  <span id="offsiteProductToggleLabel" data-expanded-label="已投放产品 · ${advertisedRows.length} 个" data-collapsed-label="已投放产品 · ${advertisedRows.length} 个（展开）">已投放产品 · ${advertisedRows.length} 个</span>
+                </button>
+                <button class="offsite-product-restore" id="offsiteProductRestore" type="button" title="恢复隐藏的产品行">恢复隐藏行</button>
+                </div>
+              </td>
+            </tr>
+            ${advertisedRows.length ? renderRows(advertisedRows, 'advertised') : ''}
+            ${unmatchedRows.length ? `<tr class="offsite-product-group-row unmatched"><td colspan="14"><strong>待补产品映射</strong><span>站外源表产品为空或未命中 T 列，花费已保留</span></td></tr>${renderRows(unmatchedRows, 'unmatched')}` : ''}
+            ${unadvertisedRows.length ? `<tr class="offsite-product-group-row unadvertised"><td colspan="14"><strong>未投放产品</strong><span>站内有经营数据但未命中品类表 T 列 · ${unadvertisedRows.length} 个</span></td></tr>${renderRows(unadvertisedRows, 'unadvertised')}` : ''}
           </tbody>
         </table>
       `;
+      setupOffsiteProductToggle();
     }
     function renderActionSignalGroup(type, title, rows, emptyText) {
       const visibleRows = rows.slice(0, 4);
@@ -4533,12 +5400,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const compareCategoryRows = selectedCategoryRows(period, 'compare');
       const offsiteProductRows = selectedOffsiteProductRows(period);
       const compareOffsiteProductRows = selectedOffsiteProductRows(period, 'compare');
-      const productRows = selectedProductRows(period);
-      const compareProductRows = selectedProductRows(period, 'compare');
+      const baseProductRows = selectedProductRows(period);
+      const baseCompareProductRows = selectedProductRows(period, 'compare');
+      const onsiteAdProductRows = selectedOnsiteAdProductRows(period);
+      const compareOnsiteAdProductRows = selectedOnsiteAdProductRows(period, 'compare');
+      const productRows = enrichProductMediaRows(baseProductRows, onsiteAdProductRows, offsiteProductRows);
+      const compareProductRows = enrichProductMediaRows(baseCompareProductRows, compareOnsiteAdProductRows, compareOffsiteProductRows);
       const audienceRows = selectedAudienceRows(period);
       const compareAudienceRows = selectedAudienceRows(period, 'compare');
       const offsiteProductView = buildOffsiteProductView(
-        offsiteProductRows, compareOffsiteProductRows, productRows, compareProductRows,
+        offsiteProductRows,
+        compareOffsiteProductRows,
+        productRows,
+        compareProductRows,
+        onsiteAdProductRows,
+        compareOnsiteAdProductRows,
       );
       const trendRows = selectedTrendRows(period);
       const compareTrendRows = selectedTrendRows(period, 'compare');
@@ -4553,7 +5429,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       renderProductMediaChart(productRows);
       renderProductTrafficChart(productRows);
       renderInsights(rows, compare, categoryRows, offsiteProductRows, period);
-      renderCategoryTable(categoryRows, compareCategoryRows);
+      renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows);
       renderProductTable(productRows, compareProductRows);
       renderOffsiteProductTable(offsiteProductView.current, offsiteProductView.compare);
       renderOffsiteActionSignals(offsiteProductView.current, offsiteProductView.compare, period);
@@ -4612,6 +5488,135 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         try {
           localStorage.setItem('sktSideNavCollapsed', collapsed ? '1' : '0');
         } catch (error) {}
+      });
+    }
+    const CATEGORY_EXPANDED_ROWS_KEY = 'sktCategoryExpandedRows';
+    const CATEGORY_SECTION_COLLAPSED_KEY = 'sktCategorySectionCollapsed';
+    function setupCategorySectionToggle() {
+      const toggle = byId('categorySectionToggle');
+      const content = byId('categoryTable');
+      if (!toggle || !content) return;
+      const setCollapsed = collapsed => {
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.setAttribute('aria-label', collapsed ? '展开品类经营明细' : '收起品类经营明细');
+        toggle.title = collapsed ? '展开品类经营明细' : '收起品类经营明细';
+        content.hidden = collapsed;
+      };
+      let saved = false;
+      try {
+        saved = localStorage.getItem(CATEGORY_SECTION_COLLAPSED_KEY) === '1';
+      } catch (error) {
+        saved = false;
+      }
+      setCollapsed(saved);
+      toggle.addEventListener('click', () => {
+        const collapsed = toggle.getAttribute('aria-expanded') === 'true';
+        setCollapsed(collapsed);
+        try {
+          localStorage.setItem(CATEGORY_SECTION_COLLAPSED_KEY, collapsed ? '1' : '0');
+        } catch (error) {}
+      });
+    }
+    function setupCategoryRowToggles() {
+      const content = byId('categoryTable');
+      if (!content) return;
+      let expandedRows = new Set();
+      try {
+        const savedRows = JSON.parse(localStorage.getItem(CATEGORY_EXPANDED_ROWS_KEY) || '[]');
+        if (Array.isArray(savedRows)) expandedRows = new Set(savedRows.map(value => String(value)));
+      } catch (error) {
+        expandedRows = new Set();
+      }
+      const setExpanded = (button, expanded) => {
+        const detail = byId(button.getAttribute('aria-controls'));
+        const category = button.dataset.categoryRowKey || '';
+        if (!detail || !category) return;
+        button.setAttribute('aria-expanded', String(expanded));
+        button.setAttribute('aria-label', `${expanded ? '收起' : '展开'}${category}商品`);
+        button.title = expanded ? '收起商品' : '展开商品';
+        detail.hidden = !expanded;
+      };
+      content.querySelectorAll('[data-category-row-key]').forEach(button => {
+        const category = button.dataset.categoryRowKey || '';
+        if (!category || button.disabled) return;
+        setExpanded(button, expandedRows.has(category));
+        button.addEventListener('click', () => {
+          const expanded = button.getAttribute('aria-expanded') !== 'true';
+          if (expanded) expandedRows.add(category);
+          else expandedRows.delete(category);
+          setExpanded(button, expanded);
+          try {
+            localStorage.setItem(CATEGORY_EXPANDED_ROWS_KEY, JSON.stringify([...expandedRows]));
+          } catch (error) {}
+        });
+      });
+    }
+    const OFFSITE_PRODUCT_COLLAPSED_KEY = 'sktOffsiteProductTableCollapsed';
+    const OFFSITE_PRODUCT_HIDDEN_ROWS_KEY = 'sktOffsiteProductHiddenRows';
+    function setupOffsiteProductToggle() {
+      const toggle = byId('offsiteProductToggle');
+      const content = byId('offsiteProductTable');
+      const label = byId('offsiteProductToggleLabel');
+      const restore = byId('offsiteProductRestore');
+      if (!toggle || !content || !label || !restore) return;
+      let hiddenRows = new Set();
+      try {
+        const savedRows = JSON.parse(localStorage.getItem(OFFSITE_PRODUCT_HIDDEN_ROWS_KEY) || '[]');
+        if (Array.isArray(savedRows)) hiddenRows = new Set(savedRows.map(value => String(value)));
+      } catch (error) {
+        hiddenRows = new Set();
+      }
+      const setCollapsed = collapsed => {
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+        toggle.title = collapsed ? '展开产品明细' : '收起产品明细';
+        label.textContent = collapsed ? label.dataset.collapsedLabel : label.dataset.expandedLabel;
+        content.querySelectorAll('.offsite-product-group-row:not(.offsite-product-toggle-row)').forEach(row => {
+          row.hidden = collapsed;
+        });
+        content.querySelectorAll('.offsite-product-data-row').forEach(row => {
+          const key = row.querySelector('[data-offsite-product-row-key]')?.dataset.offsiteProductRowKey || '';
+          row.dataset.userHidden = hiddenRows.has(key) ? '1' : '0';
+          row.hidden = collapsed || hiddenRows.has(key);
+        });
+      };
+      let saved = false;
+      try {
+        saved = localStorage.getItem(OFFSITE_PRODUCT_COLLAPSED_KEY) === '1';
+      } catch (error) {
+        saved = false;
+      }
+      setCollapsed(saved);
+      toggle.addEventListener('click', () => {
+        const collapsed = toggle.getAttribute('aria-expanded') === 'true';
+        setCollapsed(collapsed);
+        try {
+          localStorage.setItem(OFFSITE_PRODUCT_COLLAPSED_KEY, collapsed ? '1' : '0');
+        } catch (error) {}
+      });
+      content.querySelectorAll('[data-offsite-product-row-key]').forEach(button => {
+        const row = button.closest('.offsite-product-data-row');
+        const key = button.dataset.offsiteProductRowKey || '';
+        if (!row || !key) return;
+        button.textContent = '−';
+        button.title = '隐藏此产品';
+        button.addEventListener('click', () => {
+          hiddenRows.add(key);
+          row.dataset.userHidden = '1';
+          row.hidden = true;
+          try {
+            localStorage.setItem(OFFSITE_PRODUCT_HIDDEN_ROWS_KEY, JSON.stringify([...hiddenRows]));
+          } catch (error) {}
+        });
+      });
+      restore.addEventListener('click', () => {
+        hiddenRows.clear();
+        content.querySelectorAll('.offsite-product-data-row').forEach(row => {
+          row.dataset.userHidden = '0';
+        });
+        try {
+          localStorage.setItem(OFFSITE_PRODUCT_HIDDEN_ROWS_KEY, '[]');
+        } catch (error) {}
+        setCollapsed(toggle.getAttribute('aria-expanded') === 'false');
       });
     }
     const REFRESH_STORAGE_KEY = 'sktMainReportRefreshRequest';
@@ -4763,6 +5768,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       setupDateControls();
       setupCategoryControls();
       setupSideNav();
+      setupCategorySectionToggle();
+      setupOffsiteProductToggle();
       setupRefreshControl();
       byId('periodFilter').addEventListener('change', event => {
         applyPreset(event.target.value);
@@ -4806,7 +5813,7 @@ def build_html(payload: dict[str, Any]) -> str:
 def validate_report_html(html: str) -> None:
     required_fragments = (
         '<table class="offsite-product-table">',
-        '<thead><tr><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>',
+        '<thead><tr><th aria-label="行操作"></th><th>产品</th><th>SP商品GMV</th><th>GMV占比</th><th>花费RMB</th><th>消耗占比</th><th>站内花费</th><th>环比</th><th>站外GMV</th><th>ROAS</th><th>展示</th><th>点击</th><th>加购</th><th>转化</th></tr></thead>',
         "function buildOffsiteProductView",
         "未投放产品",
         'id="offsiteActionSignals"',
@@ -4825,6 +5832,9 @@ def validate_report_html(html: str) -> None:
         'id="audience-performance"',
         'id="audienceTable"',
         "function renderAudienceTable",
+        "data-offsite-product-row-key",
+        "OFFSITE_PRODUCT_HIDDEN_ROWS_KEY",
+        "恢复隐藏行",
         'id="product-visitor-conversion"',
         'id="productMediaChart"',
         'id="productTrafficChart"',
@@ -4832,6 +5842,14 @@ def validate_report_html(html: str) -> None:
         "function renderProductTrafficChart",
         "renderProductMediaChart(productRows)",
         "renderProductTrafficChart(productRows)",
+        'class="category-detail-table"',
+        'id="categorySectionToggle"',
+        "CATEGORY_SECTION_COLLAPSED_KEY",
+        "function setupCategorySectionToggle",
+        "data-category-row-key",
+        "CATEGORY_EXPANDED_ROWS_KEY",
+        "function setupCategoryRowToggles",
+        "renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows)",
         "function coreDataCompleteDate",
         "核心源表完整至",
         "Q列“拉新/再营销”",
@@ -4855,6 +5873,7 @@ def run() -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     SITE_DIR.mkdir(parents=True, exist_ok=True)
     payload = build_payload()
+    write_product_mapping_gaps(payload)
     html = build_html(payload)
     validate_report_html(html)
     output_path = OUTPUT_DIR / "skt_onsite_offsite_alignment.html"

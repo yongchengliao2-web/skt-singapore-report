@@ -12,10 +12,22 @@ from pipelines.build_skt_material_snapshots import (
     material_source_url,
     snapshot_filename,
 )
-from scripts.download_protected_assets import download_assets, referenced_snapshots
+from scripts.download_protected_assets import download_assets, referenced_snapshots, validate_html
 
 
 class MaterialSnapshotTests(unittest.TestCase):
+    def test_main_report_validation_requires_fold_controls(self) -> None:
+        complete_report = (
+            b"x" * 1024
+            + b'const DATA = {}; id="offsiteProductToggle" '
+            + b'data-offsite-product-row-key id="categorySectionToggle" data-category-row-key'
+        )
+        validate_html(Path("index.html"), complete_report)
+
+        incomplete_report = b"x" * 1024 + b'const DATA = {}; id="offsiteProductToggle"'
+        with self.assertRaisesRegex(RuntimeError, "interaction markers are missing"):
+            validate_html(Path("index.html"), incomplete_report)
+
     def test_kol_and_post_links_never_create_snapshots(self) -> None:
         source_url = "https://cdn.example.com/material/kol-preview.jpg"
         row = {

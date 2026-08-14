@@ -45,6 +45,13 @@ source_tabs:
     funnel_type_field: 类型
     audience_type_field: 拉新/再营销
     audience_type_source_column: Q
+    product_display_aliases:
+      - contains: 面霜合集
+        display_as: 面霜合集
+      - contains: 防晒合集
+        display_as: 防晒
+      - contains: 洁面合集
+        display_as: 洁面
     rule: Spend and Purchase Value are source-currency values. Use column C / Spend for offsite spend and multiply Spend and Purchase Value by row-level 汇率 before RMB ROAS or media-spend analysis. Match 产品 to 品类表 column T; when 产品 is blank, infer the longest T-column product match from Ad_name, adset_name, and campaign_name. Preserve still-unmatched spend as an explicit warning row. If the Google CSV export is incomplete, use the most complete dated positive-Spend local fallback and fill missing 汇率 from the latest exported offsite 汇率.
 
   onsite_ads:
@@ -52,12 +59,16 @@ source_tabs:
     date_field: 日期date
     spend_rmb_field: 广告花费-RMB
     gmv_rmb_field: 广告GMV-RMB
+    product_field: 链接
+    product_id_field: Product ID
     ad_name_field: Ad Name
     ad_type_field: Ads Type
     impression_field: Impression
     click_field: Clicks
     conversion_field: Conversions
     item_sold_field: Items Sold
+    normalized_product_spend_field: onsite_spend_rmb
+    rule: Use the onsite ad RMB spend directly. Match the source link to the category table T-column advertised-product catalog and expose matched spend at product/day level; unmatched store-level ads remain in category and total aggregates only.
 
   onsite_products:
     sheet: 站内产品数据-skt
@@ -70,6 +81,8 @@ source_tabs:
     gmv_sgd_field: Sales (Placed Order) (SGD)
     exchange_rate_field: 汇率
     normalized_paid_sales_field: product_paid_sales_rmb
+    source_sales_deduplication_factor: 2.0
+    source_sales_note: Divide source sales by 2 because the product data includes a duplicated summary row.
     paid_units_field: Units (Paid Order)
     visitor_field: Product Visitors (Visit)
     page_view_field: Product Page Views
@@ -89,9 +102,11 @@ source_tabs:
     sku_field: SKU
     sku_product_name_field: 产品名
     sku_category_field: 品类
+    sku_onsite_product_override_field: R
     offsite_product_field: 站外投放产品
     offsite_product_source_column: T
-    rule: Use 品类表 as the source of truth for SKU/Item/category mapping, SP SGD-to-RMB exchange rate, and the offsite advertised-product catalog in column T. Match each column-T product to at most one onsite product; onsite products with data that remain unmatched are marked 未投放产品.
+    offsite_onsite_product_override_field: U
+    rule: Use 品类表 as the source of truth for SKU/Item/category mapping, SP SGD-to-RMB exchange rate, and the offsite advertised-product catalog in column T. Column R may explicitly map the row SKU to an onsite product name or Item ID; column U may explicitly map the row T offsite product to an onsite product name or Item ID. Match each column-T product to at most one onsite product; onsite products with data that remain unmatched are marked 未投放产品.
     mapping_priority:
       - Exact Item ID match.
       - Exact SKU match.
@@ -108,7 +123,7 @@ source_tabs:
     category_field: 品类
     units_field: 销量
     prior_units_field: 上月同期销售
-    rule: Use as product/category unit supplement only; do not use these sheets as platform GMV.
+    rule: Use as product/category unit supplement only; do not use these sheets as platform GMV. Map product units to onsite products by category and name, with 品类表 column R as the explicit override.
 
 derived_metrics:
   - platform_gmv_rmb = sp_gmv_rmb + tt_gmv_rmb

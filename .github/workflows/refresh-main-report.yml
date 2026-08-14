@@ -66,6 +66,11 @@ jobs:
           test -s site/skt-material-analysis.html
           test "$(find site/assets/material_snapshots -type f -name '*.jpg' | wc -l)" -gt 0
           grep -q 'id="refreshReport"' site/index.html
+          grep -q 'id="offsiteProductToggle"' site/index.html
+          grep -q 'data-offsite-product-row-key' site/index.html
+          grep -q 'id="categorySectionToggle"' site/index.html
+          grep -q 'class="category-detail-table"' site/index.html
+          grep -q 'data-category-row-key' site/index.html
           grep -q 'PAGE_DATA' site/skt-material-analysis.html
           grep -q '"snapshot_url":"/assets/material_snapshots/' site/skt-material-analysis.html
 

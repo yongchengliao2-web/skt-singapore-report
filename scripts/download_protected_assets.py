@@ -14,6 +14,12 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 SNAPSHOT_PATH_RE = re.compile(r'"snapshot_url"\s*:\s*"(/assets/material_snapshots/[A-Za-z0-9_.-]+)"')
 USER_AGENT = "skt-report-asset-preserver/1.1"
+MAIN_REPORT_REQUIRED_MARKERS = (
+    b'id="offsiteProductToggle"',
+    b"data-offsite-product-row-key",
+    b'id="categorySectionToggle"',
+    b"data-category-row-key",
+)
 
 
 def parse_asset(value: str) -> tuple[str, Path]:
@@ -34,8 +40,14 @@ def validate_html(output_path: Path, content: bytes) -> None:
     filename = output_path.name.lower()
     if "material" in filename and b"PAGE_DATA" not in content:
         raise RuntimeError(f"material page marker is missing: {output_path}")
-    if filename in {"index.html", "skt-onsite-offsite-alignment.html"} and b"const DATA =" not in content:
-        raise RuntimeError(f"main report marker is missing: {output_path}")
+    if filename in {"index.html", "skt-onsite-offsite-alignment.html"}:
+        if b"const DATA =" not in content:
+            raise RuntimeError(f"main report marker is missing: {output_path}")
+        missing_markers = [marker.decode("ascii") for marker in MAIN_REPORT_REQUIRED_MARKERS if marker not in content]
+        if missing_markers:
+            raise RuntimeError(
+                f"main report interaction markers are missing: {output_path}: {', '.join(missing_markers)}"
+            )
 
 
 def authenticate(

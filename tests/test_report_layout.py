@@ -53,6 +53,27 @@ class ReportLayoutTests(unittest.TestCase):
         self.assertIn("renderProductMediaChart(productRows);", MAIN_REPORT_TEMPLATE)
         self.assertIn("renderProductTrafficChart(productRows);", MAIN_REPORT_TEMPLATE)
 
+    def test_category_rows_expand_to_all_filtered_products(self) -> None:
+        self.assertIn('id="categorySectionToggle"', MAIN_REPORT_TEMPLATE)
+        self.assertIn("sktCategorySectionCollapsed", MAIN_REPORT_TEMPLATE)
+        self.assertIn("function setupCategorySectionToggle", MAIN_REPORT_TEMPLATE)
+        self.assertIn("setupCategorySectionToggle();", MAIN_REPORT_TEMPLATE)
+        self.assertIn('class="category-detail-table"', MAIN_REPORT_TEMPLATE)
+        self.assertIn("data-category-row-key", MAIN_REPORT_TEMPLATE)
+        self.assertIn("function setupCategoryRowToggles", MAIN_REPORT_TEMPLATE)
+        self.assertIn("sktCategoryExpandedRows", MAIN_REPORT_TEMPLATE)
+        self.assertIn(
+            "renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows)",
+            MAIN_REPORT_TEMPLATE,
+        )
+        self.assertIn("categoryProducts.map(product =>", MAIN_REPORT_TEMPLATE)
+        self.assertIn(
+            "<div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>SP销量</div><div>TT销量</div>",
+            MAIN_REPORT_TEMPLATE,
+        )
+        self.assertIn("function enrichProductMediaRows", MAIN_REPORT_TEMPLATE)
+        self.assertIn("function tableAvailableMetricHtml", MAIN_REPORT_TEMPLATE)
+
     def test_filter_summary_warns_when_core_sources_are_partial(self) -> None:
         self.assertIn("function coreDataCompleteDate()", MAIN_REPORT_TEMPLATE)
         self.assertIn("核心源表完整至", MAIN_REPORT_TEMPLATE)

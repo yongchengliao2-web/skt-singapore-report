@@ -6,10 +6,14 @@ from pathlib import Path
 from pipelines.build_skt_alignment import (
     HTML_TEMPLATE,
     assign_onsite_products_to_offsite_catalog,
+    canonical_offsite_product_name,
     infer_offsite_advertised_product,
     load_category_reference,
     load_offsite,
+    load_onsite_ads,
+    load_onsite_products,
     load_sp_gmv,
+    match_platform_unit_products,
     normalize_audience_type,
     normalize_text,
     validate_downloaded_sheet,
@@ -128,6 +132,125 @@ class LoadSpGmvTests(unittest.TestCase):
         self.assertAlmostEqual(daily["2026-07-22"]["sp_gmv_rmb"], 535.0)
 
 
+class LoadOnsiteProductTests(unittest.TestCase):
+    def test_deduplicates_source_sales_before_product_gmv_conversion(self) -> None:
+        headers = [f"column_{index}" for index in range(41)]
+        headers[0] = "品类"
+        headers[1] = "链接"
+        headers[2] = "日期date"
+        headers[4] = "Product"
+        headers[11] = "Sales (Placed Order) (SGD)"
+        headers[13] = "Product Impression"
+        headers[14] = "Product Clicks"
+        headers[21] = "Units (Paid Order)"
+        headers[30] = "Product Visitors (Visit)"
+        headers[31] = "Product Page Views"
+        headers[36] = "Product Visitors (Add to Cart)"
+        headers[40] = "汇率"
+        values = [""] * len(headers)
+        values[0] = "面膜"
+        values[1] = "美白面膜"
+        values[2] = "8月1日"
+        values[4] = "SKT Mask"
+        values[11] = "100"
+        values[13] = "1000"
+        values[14] = "100"
+        values[21] = "4"
+        values[30] = "200"
+        values[31] = "300"
+        values[36] = "50"
+        values[40] = "5.35"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "onsite_products.csv"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(headers)
+                writer.writerow(values)
+
+            daily = {}
+            category_daily = {}
+            category_rows, product_rows, product_daily_rows = load_onsite_products(
+                source,
+                daily,
+                fx_rate=5.35,
+                category_ref={},
+                category_daily=category_daily,
+            )
+
+        self.assertAlmostEqual(daily["2026-08-01"]["product_paid_sales_sgd"], 50.0)
+        self.assertAlmostEqual(daily["2026-08-01"]["product_paid_sales_rmb"], 267.5)
+        self.assertAlmostEqual(category_rows[0]["paid_sales_sgd"], 50.0)
+        self.assertAlmostEqual(category_rows[0]["paid_sales_rmb"], 267.5)
+        self.assertAlmostEqual(product_rows[0]["paid_sales_sgd"], 50.0)
+        self.assertAlmostEqual(product_rows[0]["paid_sales_rmb"], 267.5)
+        self.assertAlmostEqual(product_daily_rows[0]["paid_sales_sgd"], 50.0)
+        self.assertAlmostEqual(product_daily_rows[0]["paid_sales_rmb"], 267.5)
+
+
+class LoadOnsiteAdProductTests(unittest.TestCase):
+    def test_matches_link_to_t_catalog_and_returns_product_daily_spend(self) -> None:
+        fieldnames = [
+            "日期date",
+            "广告花费-RMB",
+            "广告GMV-RMB",
+            "链接",
+            "Ad Name",
+            "Product ID",
+            "Impression",
+            "Clicks",
+            "Conversions",
+            "Items Sold",
+        ]
+        source_rows = [
+            {
+                "日期date": "2026-08-10",
+                "广告花费-RMB": "100",
+                "广告GMV-RMB": "500",
+                "链接": "5X面霜",
+                "Ad Name": "5X cream",
+                "Product ID": "",
+                "Impression": "10",
+                "Clicks": "2",
+                "Conversions": "1",
+                "Items Sold": "1",
+            },
+            {
+                "日期date": "2026-07-10",
+                "广告花费-RMB": "80",
+                "广告GMV-RMB": "400",
+                "链接": "5X面霜",
+                "Ad Name": "5X cream",
+                "Product ID": "",
+                "Impression": "8",
+                "Clicks": "1",
+                "Conversions": "1",
+                "Items Sold": "1",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "onsite_ads.csv"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(source_rows)
+
+            daily = {}
+            category_daily = {}
+            _, _, product_rows, product_daily_rows = load_onsite_ads(
+                source,
+                daily,
+                {"offsite_product_by_normalized": {normalize_text("5X面霜"): "5X面霜"}},
+                category_daily,
+            )
+
+        self.assertEqual(product_rows[0]["advertised_product"], "5X面霜")
+        self.assertAlmostEqual(product_rows[0]["onsite_spend_rmb"], 180.0)
+        self.assertEqual(len(product_daily_rows), 2)
+        self.assertAlmostEqual(daily["2026-08-10"]["onsite_spend_rmb"], 100.0)
+
+
 class OffsiteAudienceTests(unittest.TestCase):
     def test_normalizes_q_column_values_and_preserves_blanks(self) -> None:
         self.assertEqual(normalize_audience_type("拉新"), "拉新")
@@ -207,6 +330,24 @@ class OffsiteAudienceTests(unittest.TestCase):
 
 
 class OffsiteProductCatalogTests(unittest.TestCase):
+    def test_matches_onsite_alias_to_the_column_t_product(self) -> None:
+        category_ref = {
+            "offsite_product_by_normalized": {
+                normalize_text("半哑精华绿色气垫"): "半哑精华绿色气垫",
+            },
+        }
+
+        self.assertEqual(
+            infer_offsite_advertised_product(category_ref, "半哑光气垫"),
+            "半哑精华绿色气垫",
+        )
+
+    def test_canonicalizes_bundle_names_for_offsite_display(self) -> None:
+        self.assertEqual(canonical_offsite_product_name("面霜合集-377面霜"), "面霜合集")
+        self.assertEqual(canonical_offsite_product_name("防晒合集-哑光防晒"), "防晒")
+        self.assertEqual(canonical_offsite_product_name("洁面合集+PDRN精华"), "洁面")
+        self.assertEqual(canonical_offsite_product_name("防晒喷雾"), "防晒喷雾")
+
     def test_loads_physical_column_t_as_the_advertised_product_catalog(self) -> None:
         headers = [f"column_{index}" for index in range(20)]
         headers[19] = "\u7ad9\u5916\u6295\u653e\u4ea7\u54c1"
@@ -224,6 +365,48 @@ class OffsiteProductCatalogTests(unittest.TestCase):
         self.assertEqual(reference["offsite_products"], ["5X\u9762\u971c"])
         self.assertEqual(reference["offsite_product_count"], 1)
         self.assertEqual(reference["offsite_product_by_normalized"][normalize_text("5X\u9762\u971c")], "5X\u9762\u971c")
+
+    def test_loads_r_and_u_columns_as_explicit_product_overrides(self) -> None:
+        headers = [f"column_{index}" for index in range(21)]
+        values = [""] * 21
+        values[12] = "SKINTIFIC-05"
+        values[17] = "23935452636"
+        values[19] = "5X\u9762\u971c"
+        values[20] = "5X\u9762\u971c"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "category_map.csv"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(headers)
+                writer.writerow(values)
+            reference = load_category_reference(source)
+
+        self.assertEqual(reference["sku_to_onsite_product"][normalize_text("SKINTIFIC-05")], "23935452636")
+        self.assertEqual(reference["offsite_product_to_onsite_product"][normalize_text("5X\u9762\u971c")], "5X\u9762\u971c")
+
+    def test_r_column_override_resolves_ambiguous_platform_unit_product(self) -> None:
+        unit_rows = [
+            {
+                "platform": "SP",
+                "sku": "SKINTIFIC-334",
+                "product": "5X\u9762\u971c100g",
+                "product_override": "25507637912",
+                "category": "\u9762\u971c",
+                "units": 10,
+                "prior_units": 8,
+            }
+        ]
+        product_rows = [
+            {"item_id": "23935452636", "product": "5X\u9762\u971c", "category": "\u9762\u971c", "paid_sales_rmb": 100},
+            {"item_id": "25507637912", "product": "5X\u9762\u971c-80g", "category": "\u9762\u971c", "paid_sales_rmb": 80},
+        ]
+
+        assignments, gaps = match_platform_unit_products(unit_rows, product_rows)
+
+        key = (normalize_text("SKINTIFIC-334"), normalize_text("5X\u9762\u971c100g"), "\u9762\u971c")
+        self.assertEqual(assignments[key], ("5X\u9762\u971c-80g", "\u9762\u971c"))
+        self.assertEqual(gaps, [])
 
     def test_assigns_one_onsite_product_and_leaves_the_rest_unadvertised(self) -> None:
         reference = {"offsite_products": ["5X\u9762\u971c"]}
@@ -342,6 +525,22 @@ class OffsiteProductCatalogTests(unittest.TestCase):
         self.assertIn("function aggregateUnmatchedOffsiteRow", HTML_TEMPLATE)
         self.assertIn("\u5f85\u8865\u4ea7\u54c1\u6620\u5c04", HTML_TEMPLATE)
         self.assertIn("\u82b1\u8d39\u5df2\u4fdd\u7559", HTML_TEMPLATE)
+
+    def test_report_adds_onsite_spend_and_period_change_columns(self) -> None:
+        self.assertIn("<th>站内花费</th><th>环比</th>", HTML_TEMPLATE)
+        self.assertIn("function aggregateAdvertisedOnsiteSpendRows", HTML_TEMPLATE)
+        self.assertIn("selectedOnsiteAdProductRows(period, 'compare')", HTML_TEMPLATE)
+
+    def test_report_adds_collapsible_offsite_product_table(self) -> None:
+        self.assertIn('id="offsiteProductToggle"', HTML_TEMPLATE)
+        self.assertIn('class="offsite-product-toggle-row offsite-product-group-row"', HTML_TEMPLATE)
+        self.assertIn('data-expanded-label="已投放产品', HTML_TEMPLATE)
+        self.assertIn('aria-controls="offsiteProductTable"', HTML_TEMPLATE)
+        self.assertIn('data-offsite-product-row-key', HTML_TEMPLATE)
+        self.assertIn('id="offsiteProductRestore"', HTML_TEMPLATE)
+        self.assertIn('恢复隐藏行', HTML_TEMPLATE)
+        self.assertIn("function setupOffsiteProductToggle", HTML_TEMPLATE)
+        self.assertIn("sktOffsiteProductTableCollapsed", HTML_TEMPLATE)
 
 
 if __name__ == "__main__":
