@@ -65,6 +65,29 @@ class DownloadedSheetValidationTests(unittest.TestCase):
 
             validate_downloaded_sheet("站内产品数据-skt", source)
 
+    def test_accepts_shifted_onsite_product_fields_by_name(self) -> None:
+        headers = [
+            "二级品类",
+            "三级品类",
+            "品类",
+            "链接",
+            "日期date",
+            "Item ID",
+            "Product",
+            "Sales (Placed Order) (SGD)",
+            "Product Impression",
+            "Product Clicks",
+            "Units (Paid Order)",
+            "Product Visitors (Visit)",
+            "Product Page Views",
+            "Product Visitors (Add to Cart)",
+            "汇率",
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "onsite_products.csv.part"
+            self.write_csv(source, headers)
+            validate_downloaded_sheet("站内产品数据-skt", source)
+
 
 class LoadSpGmvTests(unittest.TestCase):
     def test_uses_after_seller_discounts_when_customer_payment_is_blank(self) -> None:
@@ -134,32 +157,40 @@ class LoadSpGmvTests(unittest.TestCase):
 
 class LoadOnsiteProductTests(unittest.TestCase):
     def test_deduplicates_source_sales_before_product_gmv_conversion(self) -> None:
-        headers = [f"column_{index}" for index in range(41)]
-        headers[0] = "品类"
-        headers[1] = "链接"
-        headers[2] = "日期date"
-        headers[4] = "Product"
-        headers[11] = "Sales (Placed Order) (SGD)"
-        headers[13] = "Product Impression"
-        headers[14] = "Product Clicks"
-        headers[21] = "Units (Paid Order)"
-        headers[30] = "Product Visitors (Visit)"
-        headers[31] = "Product Page Views"
-        headers[36] = "Product Visitors (Add to Cart)"
-        headers[40] = "汇率"
-        values = [""] * len(headers)
-        values[0] = "面膜"
-        values[1] = "美白面膜"
-        values[2] = "8月1日"
-        values[4] = "SKT Mask"
-        values[11] = "100"
-        values[13] = "1000"
-        values[14] = "100"
-        values[21] = "4"
-        values[30] = "200"
-        values[31] = "300"
-        values[36] = "50"
-        values[40] = "5.35"
+        headers = [
+            "二级品类",
+            "三级品类",
+            "品类",
+            "链接",
+            "日期date",
+            "Item ID",
+            "Product",
+            "Sales (Placed Order) (SGD)",
+            "Product Impression",
+            "Product Clicks",
+            "Units (Paid Order)",
+            "Product Visitors (Visit)",
+            "Product Page Views",
+            "Product Visitors (Add to Cart)",
+            "汇率",
+        ]
+        values = [
+            "新增分组",
+            "新增品类",
+            "面膜",
+            "美白面膜",
+            "8月1日",
+            "",
+            "SKT Mask",
+            "100",
+            "1000",
+            "100",
+            "4",
+            "200",
+            "300",
+            "50",
+            "5.35",
+        ]
 
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "onsite_products.csv"
@@ -186,6 +217,8 @@ class LoadOnsiteProductTests(unittest.TestCase):
         self.assertAlmostEqual(product_rows[0]["paid_sales_rmb"], 267.5)
         self.assertAlmostEqual(product_daily_rows[0]["paid_sales_sgd"], 50.0)
         self.assertAlmostEqual(product_daily_rows[0]["paid_sales_rmb"], 267.5)
+        self.assertAlmostEqual(product_rows[0]["product_impressions"], 1000.0)
+        self.assertAlmostEqual(product_rows[0]["product_clicks"], 100.0)
 
 
 class LoadOnsiteAdProductTests(unittest.TestCase):

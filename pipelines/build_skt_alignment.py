@@ -24,8 +24,6 @@ SPREADSHEET_ID = "1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk"
 DEFAULT_FX_RATE = 5.35
 DEFAULT_OFFSITE_FX_RATE = 6.9
 ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR = 2.0
-ONSITE_PRODUCT_IMPRESSION_INDEX = 13
-ONSITE_PRODUCT_CLICK_INDEX = 14
 OFFSITE_PRODUCT_CATALOG_INDEX = 19
 SKU_ONSITE_PRODUCT_OVERRIDE_INDEX = 17
 OFFSITE_ONSITE_PRODUCT_OVERRIDE_INDEX = 20
@@ -36,6 +34,8 @@ ONSITE_PRODUCT_REQUIRED_HEADER_GROUPS = (
     ("Units (Paid Order)",),
     ("Product Visitors (Visit)",),
     ("Product Visitors (Add to Cart)",),
+    ("Product Impression", "Product Impressions"),
+    ("Product Clicks",),
 )
 
 SOURCES: dict[str, dict[str, Any]] = {
@@ -109,8 +109,8 @@ def validate_downloaded_sheet(sheet_name: str, path: Path) -> None:
 
     header_set = {header.strip() for header in headers if header.strip()}
     missing_groups = [" / ".join(group) for group in ONSITE_PRODUCT_REQUIRED_HEADER_GROUPS if not header_set.intersection(group)]
-    if len(headers) <= ONSITE_PRODUCT_CLICK_INDEX or missing_groups:
-        missing_text = ", ".join(missing_groups) or f"columns through {_excel_column_name(ONSITE_PRODUCT_CLICK_INDEX + 1)}"
+    if missing_groups:
+        missing_text = ", ".join(missing_groups)
         raise ValueError(f"{sheet_name} returned unexpected columns; missing {missing_text}")
 
 
@@ -1313,12 +1313,8 @@ def load_onsite_products(
         visitors = parse_number(get_value(row, "Product Visitors (Visit)"))
         page_views = parse_number(get_value(row, "Product Page Views"))
         add_to_cart_visitors = parse_number(get_value(row, "Product Visitors (Add to Cart)"))
-        product_clicks = parse_number(
-            values[ONSITE_PRODUCT_CLICK_INDEX] if len(values) > ONSITE_PRODUCT_CLICK_INDEX else ""
-        )
-        product_impressions = parse_number(
-            values[ONSITE_PRODUCT_IMPRESSION_INDEX] if len(values) > ONSITE_PRODUCT_IMPRESSION_INDEX else ""
-        )
+        product_clicks = parse_number(get_value(row, "Product Clicks"))
+        product_impressions = parse_number(get_value(row, "Product Impression", "Product Impressions"))
 
         item = add_daily(daily, day)
         item["product_paid_sales_sgd"] += paid_sales_sgd

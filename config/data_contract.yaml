@@ -87,9 +87,9 @@ source_tabs:
     visitor_field: Product Visitors (Visit)
     page_view_field: Product Page Views
     add_to_cart_visitor_field: Product Visitors (Add to Cart)
-    product_click_field: O
-    product_impression_field: N
-    rule: Use column L / Sales (Placed Order) (SGD) as onsite product GMV and multiply by the row-level 汇率 column to calculate RMB GMV; keep traffic, add-to-cart and units as native counts. Use column O as product clicks and column N as product impressions, so CTR = O / N.
+    product_click_field: Product Clicks
+    product_impression_field: Product Impression
+    rule: Use the named Sales (Placed Order) (SGD) field as onsite product GMV and multiply by the row-level 汇率 field to calculate RMB GMV; keep traffic, add-to-cart and units as native counts. Use the named Product Clicks and Product Impression fields, so CTR = Product Clicks / Product Impression. Ignore newly inserted 二级品类 and 三级品类 fields until the category logic is explicitly changed.
 
   category_reference:
     sheet: 品类表
