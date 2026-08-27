@@ -54,17 +54,29 @@ def expected_minimum_date(
     return subtract_business_days(current.date(), business_day_lag).isoformat()
 
 
-def validate_freshness(payload: dict[str, Any], minimum_date: str) -> dict[str, Any]:
+def validate_freshness(
+    payload: dict[str, Any],
+    minimum_date: str,
+    max_stale_sources: int = 0,
+) -> dict[str, Any]:
+    if max_stale_sources < 0:
+        raise ValueError("max_stale_sources must be non-negative")
     summary = payload.get("summary") or {}
     freshness = summary.get("freshness") or {}
+    missing = [key for key in REQUIRED_FRESHNESS if not str(freshness.get(key) or "").strip()]
+    if missing:
+        raise RuntimeError(f"main report source date is missing: {', '.join(missing)}")
     stale = {
-        key: str(freshness.get(key) or "")
+        key: str(freshness[key])
         for key in REQUIRED_FRESHNESS
-        if str(freshness.get(key) or "") < minimum_date
+        if str(freshness[key]) < minimum_date
     }
-    if stale:
+    if len(stale) > max_stale_sources:
         details = ", ".join(f"{key}={value or 'missing'}" for key, value in stale.items())
-        raise RuntimeError(f"main report source is older than {minimum_date}: {details}")
+        raise RuntimeError(
+            f"main report has {len(stale)} stale sources, maximum allowed is "
+            f"{max_stale_sources}; older than {minimum_date}: {details}"
+        )
     return {
         "generated_at": summary.get("generated_at"),
         "report_date": summary.get("report_date"),
@@ -72,6 +84,8 @@ def validate_freshness(payload: dict[str, Any], minimum_date: str) -> dict[str, 
         "date_end": summary.get("date_end"),
         "minimum_date": minimum_date,
         "freshness": {key: freshness.get(key) for key in REQUIRED_FRESHNESS},
+        "missing_sources": missing,
+        "stale_sources": stale,
         "daily_rows": len(payload.get("daily_rows") or []),
     }
 
@@ -86,13 +100,22 @@ def main() -> int:
         default=DEFAULT_SOURCE_LAG_BUSINESS_DAYS,
         help="Maximum source lag in weekdays when --minimum-date is not provided.",
     )
+    parser.add_argument(
+        "--max-stale-sources",
+        type=int,
+        default=0,
+        help="Allow this many required sources to lag while still validating the report.",
+    )
     args = parser.parse_args()
     if args.business_day_lag < 0:
         parser.error("--business-day-lag must be non-negative")
+    if args.max_stale_sources < 0:
+        parser.error("--max-stale-sources must be non-negative")
 
     result = validate_freshness(
         read_report_payload(args.html),
         args.minimum_date or expected_minimum_date(business_day_lag=args.business_day_lag),
+        max_stale_sources=args.max_stale_sources,
     )
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     return 0

@@ -11,8 +11,15 @@ $Python = if (Test-Path $BundledPython) { $BundledPython } else { "python" }
 
 Push-Location $ProjectRoot
 try {
-  & $Python -c "import PIL, imageio_ffmpeg" 2>$null
-  if ($LASTEXITCODE -ne 0) {
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    & $Python -c "import PIL, imageio_ffmpeg" 2>$null
+    $dependencyCheckExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($dependencyCheckExitCode -ne 0) {
     Write-Host "Installing material snapshot dependencies..."
     & $Python -m pip install --disable-pip-version-check --quiet `
       --requirement "pipelines\requirements-material-snapshots.txt"

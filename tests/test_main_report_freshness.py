@@ -46,6 +46,25 @@ class MainReportFreshnessTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "onsite_products=2026-07-23"):
             validate_freshness(payload, "2026-07-26")
 
+    def test_allows_one_stale_source_when_configured(self) -> None:
+        payload = self.payload("2026-07-26")
+        payload["summary"]["freshness"]["tt_gmv"] = "2026-07-17"
+        result = validate_freshness(payload, "2026-07-26", max_stale_sources=1)
+        self.assertEqual(result["stale_sources"], {"tt_gmv": "2026-07-17"})
+
+    def test_rejects_more_stale_sources_than_configured(self) -> None:
+        payload = self.payload("2026-07-26")
+        payload["summary"]["freshness"]["tt_gmv"] = "2026-07-17"
+        payload["summary"]["freshness"]["onsite_ads"] = "2026-07-18"
+        with self.assertRaisesRegex(RuntimeError, "2 stale sources"):
+            validate_freshness(payload, "2026-07-26", max_stale_sources=1)
+
+    def test_rejects_missing_source_even_when_stale_sources_are_allowed(self) -> None:
+        payload = self.payload("2026-07-26")
+        payload["summary"]["freshness"]["tt_gmv"] = ""
+        with self.assertRaisesRegex(RuntimeError, "source date is missing: tt_gmv"):
+            validate_freshness(payload, "2026-07-26", max_stale_sources=5)
+
     def test_expected_date_allows_two_business_days_of_source_lag(self) -> None:
         monday = datetime(2026, 8, 3, 10, 45, tzinfo=timezone(timedelta(hours=8)))
         wednesday = datetime(2026, 8, 5, 10, 45, tzinfo=timezone(timedelta(hours=8)))
