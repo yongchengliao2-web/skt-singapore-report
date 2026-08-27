@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import json
 import os
@@ -23,6 +23,7 @@ SITE_DIR = ROOT / "site"
 SPREADSHEET_ID = "1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk"
 DEFAULT_FX_RATE = 5.35
 DEFAULT_OFFSITE_FX_RATE = 6.9
+SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR = 2.0
 OFFSITE_PRODUCT_CATALOG_INDEX = 19
 SKU_ONSITE_PRODUCT_OVERRIDE_INDEX = 17
@@ -1914,6 +1915,7 @@ def max_date_for(rows: list[dict[str, Any]], field: str) -> str:
 
 
 def build_summary(daily_rows: list[dict[str, Any]], fx_rate: float) -> dict[str, Any]:
+    generated_at = datetime.now(SHANGHAI_TIMEZONE)
     totals = {field: sum_field(daily_rows, field) for field in daily_rows[0] if field != "date"} if daily_rows else {}
     totals["platform_gmv_rmb"] = sum_field(daily_rows, "platform_gmv_rmb")
     totals["platform_orders"] = sum_field(daily_rows, "platform_orders")
@@ -1947,8 +1949,8 @@ def build_summary(daily_rows: list[dict[str, Any]], fx_rate: float) -> dict[str,
         "fx_rate": fx_rate,
         "date_start": daily_rows[0]["date"] if daily_rows else "",
         "date_end": daily_rows[-1]["date"] if daily_rows else "",
-        "report_date": date.today().isoformat(),
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "report_date": generated_at.date().isoformat(),
+        "generated_at": generated_at.strftime("%Y-%m-%d %H:%M"),
         "totals": totals,
         "freshness": {
             "sp_gmv": max_date_for(daily_rows, "sp_gmv_rmb"),
