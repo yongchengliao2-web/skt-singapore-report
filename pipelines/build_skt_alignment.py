@@ -42,41 +42,49 @@ ONSITE_PRODUCT_REQUIRED_HEADER_GROUPS = (
 SOURCES: dict[str, dict[str, Any]] = {
     "sp_gmv": {
         "sheet": "SP店铺实收GMV",
+        "gid": "0",
         "filename": "sp_store_gmv.csv",
         "fallbacks": ["sp_gmv.csv"],
     },
     "tt_gmv": {
         "sheet": "TT-销售GMV",
+        "gid": "1359977787",
         "filename": "tt_sales_gmv.csv",
         "fallbacks": ["tt_gmv.csv"],
     },
     "offsite": {
         "sheet": "站外数据源",
+        "gid": "1403773681",
         "filename": "offsite.csv",
         "fallbacks": ["offsite.csv"],
     },
     "onsite_ads": {
         "sheet": "站内广告",
+        "gid": "1911401270",
         "filename": "onsite_ads.csv",
         "fallbacks": ["onsite_ads.csv"],
     },
     "onsite_products": {
         "sheet": "站内产品数据-skt",
+        "gid": "1902771001",
         "filename": "onsite_products.csv",
         "fallbacks": ["onsite_products.csv"],
     },
     "sp_units": {
         "sheet": "SP-销量",
+        "gid": "1751562422",
         "filename": "sp_units.csv",
         "fallbacks": ["SP-销量.csv"],
     },
     "tt_units": {
         "sheet": "TT-销量",
+        "gid": "1268825459",
         "filename": "tt_units.csv",
         "fallbacks": ["TT-销量.csv"],
     },
     "category_map": {
         "sheet": "品类表",
+        "gid": "2024523113",
         "filename": "category_map.csv",
         "fallbacks": ["品类表.csv"],
     },
@@ -117,10 +125,18 @@ def validate_downloaded_sheet(sheet_name: str, path: Path) -> None:
 
 def _download_sheet(sheet_name: str, destination: Path) -> None:
     cachebust = int(datetime.now().timestamp())
-    url = (
-        f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?"
-        f"tqx=out:csv&sheet={quote(sheet_name)}&cachebust={cachebust}"
-    )
+    config = next((item for item in SOURCES.values() if item["sheet"] == sheet_name), {})
+    gid = config.get("gid")
+    if gid is not None:
+        url = (
+            f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?"
+            f"format=csv&gid={quote(str(gid))}&cachebust={cachebust}"
+        )
+    else:
+        url = (
+            f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?"
+            f"tqx=out:csv&sheet={quote(sheet_name)}&cachebust={cachebust}"
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     part = destination.with_suffix(destination.suffix + ".part")
     request = Request(
