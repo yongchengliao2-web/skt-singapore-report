@@ -18,6 +18,7 @@ $LogPath = Join-Path $LogDir "cloudflare_publish_$RunStamp.log"
 $BundledPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
 $Python = if (Test-Path $BundledPython) { $BundledPython } else { "python" }
 $Npx = "npx.cmd"
+$WranglerPackage = "wrangler@4.113.0"
 $PageUrl = "https://$ProjectName.pages.dev/"
 $PasswordWorkerPath = Join-Path $ProjectRoot "scripts\cloudflare_password_worker.js"
 
@@ -156,7 +157,7 @@ Write-Step "PREPARED password-protected bundle $DeployDir"
 if ($CreateProject) {
   try {
     Invoke-LoggedNative -FilePath $Npx -Arguments @(
-      "wrangler", "pages", "project", "create", $ProjectName,
+      "--yes", $WranglerPackage, "pages", "project", "create", $ProjectName,
       "--production-branch", $Branch,
       "--compatibility-date", $CompatibilityDate
     )
@@ -166,7 +167,7 @@ if ($CreateProject) {
 }
 
 Invoke-LoggedNativeWithRetry -FilePath $Npx -Arguments @(
-  "wrangler", "pages", "deploy", $DeployDir,
+  "--yes", $WranglerPackage, "pages", "deploy", $DeployDir,
   "--project-name", $ProjectName,
   "--branch", $Branch,
   "--commit-dirty=true"
