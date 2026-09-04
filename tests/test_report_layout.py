@@ -5,6 +5,7 @@ from pipelines.build_skt_alignment import HTML_TEMPLATE as MAIN_REPORT_TEMPLATE
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MAIN_REPORT_SOURCE = (ROOT / "pipelines" / "build_skt_alignment.py").read_text(encoding="utf-8")
 MATERIAL_REPORT_TEMPLATE = (ROOT / "pipelines" / "build_skt_material_analysis.py").read_text(encoding="utf-8")
 PASSWORD_WORKER = (ROOT / "scripts" / "cloudflare_password_worker.js").read_text(encoding="utf-8")
 
@@ -68,7 +69,7 @@ class ReportLayoutTests(unittest.TestCase):
         )
         self.assertIn("categoryProducts.map(product =>", MAIN_REPORT_TEMPLATE)
         self.assertIn(
-            "<div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>SP销量</div><div>TT销量</div>",
+            "<div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>访问</div><div>加购率</div><div>支付件转化</div>",
             MAIN_REPORT_TEMPLATE,
         )
         self.assertIn("function enrichProductMediaRows", MAIN_REPORT_TEMPLATE)
@@ -78,6 +79,23 @@ class ReportLayoutTests(unittest.TestCase):
         self.assertIn("function coreDataCompleteDate()", MAIN_REPORT_TEMPLATE)
         self.assertIn("核心源表完整至", MAIN_REPORT_TEMPLATE)
         self.assertIn('dataset.warning = String(hasPartialData)', MAIN_REPORT_TEMPLATE)
+
+    def test_report_removes_operating_copy_and_old_product_columns(self) -> None:
+        self.assertNotIn("经营", MAIN_REPORT_TEMPLATE)
+        self.assertNotIn("经营", MATERIAL_REPORT_TEMPLATE)
+        self.assertNotIn("SP销量</th>", MAIN_REPORT_TEMPLATE)
+        self.assertNotIn("TT销量</th>", MAIN_REPORT_TEMPLATE)
+        self.assertNotIn("销量增幅</th>", MAIN_REPORT_TEMPLATE)
+        onsite_loader = MAIN_REPORT_SOURCE.split("def load_onsite_products", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn('get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)")', onsite_loader)
+        self.assertIn("按字段名读取 Sales (Placed Order) (SGD)", MAIN_REPORT_SOURCE)
+        self.assertIn("row = dict(zip(headers, values))", onsite_loader)
+        self.assertNotIn("values[", onsite_loader)
+
+    def test_summary_units_use_dms_platform_unit_totals(self) -> None:
+        self.assertIn("platform_units: sum(rows, 'platform_units')", MAIN_REPORT_TEMPLATE)
+        self.assertIn("value: fmt0.format(t.platform_units)", MAIN_REPORT_TEMPLATE)
+        self.assertIn("current: t.platform_units", MAIN_REPORT_TEMPLATE)
 
 
 if __name__ == "__main__":

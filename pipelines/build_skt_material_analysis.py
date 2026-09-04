@@ -621,7 +621,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="topbar-inner">
       <div class="brand"><span class="mark">SKT</span><span>新加坡</span></div>
       <div class="nav">
-        <a href="index.html">经营总览</a>
+        <a href="index.html">总览</a>
         <a class="active" href="skt-material-analysis.html">素材分析</a>
         <a href="#summary">核心指标</a>
         <a href="#category">品类</a>

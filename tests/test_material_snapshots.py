@@ -20,11 +20,16 @@ class MaterialSnapshotTests(unittest.TestCase):
         complete_report = (
             b"x" * 1024
             + b'const DATA = {}; id="offsiteProductToggle" '
-            + b'data-offsite-product-row-key id="categorySectionToggle" data-category-row-key'
+            + b'data-offsite-product-row-key id="groupTable" data-group-row-key '
+            + b'id="categorySectionToggle" data-category-row-key'
         )
         validate_html(Path("index.html"), complete_report)
 
-        incomplete_report = b"x" * 1024 + b'const DATA = {}; id="offsiteProductToggle"'
+        incomplete_report = (
+            b"x" * 1024
+            + b'const DATA = {}; id="offsiteProductToggle" data-offsite-product-row-key '
+            + b'id="categorySectionToggle" data-category-row-key'
+        )
         with self.assertRaisesRegex(RuntimeError, "interaction markers are missing"):
             validate_html(Path("index.html"), incomplete_report)
 

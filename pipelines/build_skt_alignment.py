@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "raw"
+CACHE_DIR = ROOT / "cache"
 OUTPUT_DIR = ROOT / "output"
 SITE_DIR = ROOT / "site"
 
@@ -24,7 +25,15 @@ SPREADSHEET_ID = "1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk"
 DEFAULT_FX_RATE = 5.35
 DEFAULT_OFFSITE_FX_RATE = 6.9
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
+REPORT_CONTRACT_VERSION = "skt-main-report-dms-v2"
 ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR = 2.0
+VOUCHER_SGD_TO_RMB = 5.23
+VOUCHER_CACHE_PATH = CACHE_DIR / "skt_voucher_item_daily.json"
+DMS_COMMERCE_CACHE_PATH = ROOT / "data" / "dms" / "skt_dms_commerce_latest.json"
+VOUCHER_SOURCE_TABLE = (
+    "advance-rush-406115.dim_shopee_ads_performance."
+    "sg_skt_onsite_voucher_cost_by_item"
+)
 OFFSITE_PRODUCT_CATALOG_INDEX = 19
 SKU_ONSITE_PRODUCT_OVERRIDE_INDEX = 17
 OFFSITE_ONSITE_PRODUCT_OVERRIDE_INDEX = 20
@@ -88,7 +97,15 @@ SOURCES: dict[str, dict[str, Any]] = {
         "filename": "category_map.csv",
         "fallbacks": ["品类表.csv"],
     },
+    "new_mapping": {
+        "sheet": "新映射",
+        "gid": "1410457373",
+        "filename": "new_mapping.csv",
+        "fallbacks": [],
+    },
 }
+
+DMS_COMMERCE_SOURCE_KEYS = frozenset({"sp_gmv", "tt_gmv", "sp_units", "tt_units"})
 
 
 def _excel_column_name(index: int) -> str:
@@ -164,6 +181,9 @@ def ensure_source_csvs() -> dict[str, Path]:
 
     for key, config in SOURCES.items():
         target = RAW_DIR / config["filename"]
+        if key in DMS_COMMERCE_SOURCE_KEYS and DMS_COMMERCE_CACHE_PATH.is_file() and DMS_COMMERCE_CACHE_PATH.stat().st_size > 0:
+            resolved[key] = target
+            continue
         if use_local_sources:
             if not target.exists() or target.stat().st_size <= 0:
                 raise FileNotFoundError(f"Local source is missing: {target}")
@@ -390,6 +410,29 @@ def clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def clean_mapping_value(value: Any) -> str:
+    return clean_text(value).replace("\u00a0", " ").strip()
+
+
+def clean_category(value: Any) -> str:
+    return clean_mapping_value(value)
+
+
+def is_item_id(value: Any) -> bool:
+    return bool(re.fullmatch(r"\d+", clean_mapping_value(value)))
+
+
+def onsite_product_identity(item_id: Any, product: Any, category: Any) -> str:
+    item_key = normalize_text(item_id)
+    if item_key:
+        return f"item:{item_key}"
+    return f"product:{normalize_text(product)}|category:{normalize_text(category)}"
+
+
+def category_is_unclassified(value: Any) -> bool:
+    return normalize_text(value) in {"", "未归类", "未分类"}
+
+
 def normalize_text(value: Any) -> str:
     text = clean_text(value).casefold()
     return re.sub(r"[\s_\-（）()【】\[\],，:/：]+", "", text)
@@ -415,7 +458,111 @@ def put_mapping(mapping: dict[str, str], key: str, category: str) -> None:
         mapping[normalized] = category
 
 
-def load_category_reference(path: Path) -> dict[str, Any]:
+def header_indices(headers: list[str], name: str) -> list[int]:
+    target = clean_text(name).casefold()
+    return [index for index, header in enumerate(headers) if clean_text(header).casefold() == target]
+
+
+def load_new_mapping(path: Path | None) -> dict[str, Any]:
+    empty = {
+        "source_rows": 0,
+        "item_by_id": {},
+        "item_by_name": {},
+        "category_group_map": {},
+        "category_group_map_normalized": {},
+        "group_order": [],
+        "conflicts": [],
+    }
+    if not path or not path.is_file():
+        return empty
+    rows = read_csv_rows(path)
+    if not rows:
+        return empty
+    headers = rows[0]
+    group_indexes = header_indices(headers, "分组")
+    category_indexes = header_indices(headers, "品类")
+    item_indexes = header_indices(headers, "Item ID")
+    product_indexes = header_indices(headers, "产品")
+    if not group_indexes or len(category_indexes) < 2 or not item_indexes or not product_indexes:
+        raise ValueError("新映射缺少分组、重复品类、Item ID 或产品字段")
+
+    group_index = group_indexes[0]
+    group_category_index = category_indexes[0]
+    item_id_index = item_indexes[0]
+    product_index = product_indexes[0]
+    item_category_index = category_indexes[1]
+    item_by_id: dict[str, dict[str, str]] = {}
+    item_by_name: dict[str, dict[str, str]] = {}
+    category_group_map: dict[str, str] = {}
+    category_group_map_normalized: dict[str, str] = {}
+    group_order: list[str] = []
+    conflicts: list[dict[str, str]] = []
+    current_group = ""
+    current_group_category = ""
+
+    for row in rows[1:]:
+        group = clean_mapping_value(row[group_index]) if group_index < len(row) else ""
+        if group and group != "分组":
+            current_group = group
+            if current_group not in group_order:
+                group_order.append(current_group)
+        group_category = clean_category(row[group_category_index]) if group_category_index < len(row) else ""
+        if group_category and group_category != "品类":
+            current_group_category = group_category
+        if current_group and current_group_category:
+            category_key = normalize_text(current_group_category)
+            existing_group = category_group_map_normalized.get(category_key)
+            if existing_group and existing_group != current_group:
+                conflicts.append(
+                    {
+                        "category": current_group_category,
+                        "existing_group": existing_group,
+                        "new_group": current_group,
+                    }
+                )
+            elif not existing_group:
+                category_group_map[current_group_category] = current_group
+                category_group_map_normalized[category_key] = current_group
+
+        item_id = clean_mapping_value(row[item_id_index]) if item_id_index < len(row) else ""
+        product = clean_mapping_value(row[product_index]) if product_index < len(row) else ""
+        item_category = clean_category(row[item_category_index]) if item_category_index < len(row) else ""
+        if not is_item_id(item_id) or not product or not item_category:
+            continue
+        key = normalize_text(item_id)
+        record = {
+            "item_id": item_id,
+            "name": product,
+            "category": item_category,
+            "group": current_group,
+        }
+        existing = item_by_id.get(key)
+        if existing and (existing["name"] != product or existing["category"] != item_category):
+            conflicts.append(
+                {
+                    "item_id": item_id,
+                    "existing_product": existing["name"],
+                    "new_product": product,
+                    "existing_category": existing["category"],
+                    "new_category": item_category,
+                }
+            )
+            continue
+        item_by_id[key] = record
+        item_by_name[normalize_text(product)] = record
+
+    return {
+        "source_rows": max(len(rows) - 1, 0),
+        "item_by_id": item_by_id,
+        "item_by_name": item_by_name,
+        "category_group_map": category_group_map,
+        "category_group_map_normalized": category_group_map_normalized,
+        "group_order": group_order,
+        "conflicts": conflicts,
+    }
+
+
+def load_category_reference(path: Path, new_mapping_path: Path | None = None) -> dict[str, Any]:
     rows = read_csv_rows(path)
     item_id_to_category: dict[str, str] = {}
     item_id_to_product: dict[str, str] = {}
@@ -472,6 +619,14 @@ def load_category_reference(path: Path) -> dict[str, Any]:
         if offsite_product and offsite_onsite_product:
             offsite_product_to_onsite_product[normalized_offsite_product] = offsite_onsite_product
 
+    new_mapping = load_new_mapping(new_mapping_path)
+    for key, record in new_mapping["item_by_id"].items():
+        item_id_to_category[key] = record["category"]
+        item_id_to_product[key] = record["name"]
+        item_name_to_category[normalize_text(record["name"])] = record["category"]
+        item_name_by_normalized[normalize_text(record["name"])] = record["name"]
+        categories.add(record["category"])
+
     searchable_names: list[tuple[str, str]] = []
     for mapping in (item_name_to_category, sku_name_to_category):
         searchable_names.extend((name, category) for name, category in mapping.items() if len(name) >= 2)
@@ -510,6 +665,13 @@ def load_category_reference(path: Path) -> dict[str, Any]:
         "offsite_products": offsite_products,
         "offsite_product_by_normalized": offsite_product_by_normalized,
         "offsite_product_to_onsite_product": offsite_product_to_onsite_product,
+        "new_mapping_item_by_id": new_mapping["item_by_id"],
+        "new_mapping_item_count": len(new_mapping["item_by_id"]),
+        "new_mapping_source_rows": new_mapping["source_rows"],
+        "new_mapping_conflicts": new_mapping["conflicts"],
+        "category_group_map": new_mapping["category_group_map"],
+        "category_group_map_normalized": new_mapping["category_group_map_normalized"],
+        "group_order": new_mapping["group_order"],
         "categories": sorted(categories),
         "searchable_names": searchable_names,
         "keyword_categories": keyword_categories,
@@ -762,6 +924,12 @@ def empty_daily_row(day: str) -> dict[str, Any]:
         "tt_gmv_rmb": 0.0,
         "tt_gmv_local": 0.0,
         "tt_orders": 0.0,
+        "sp_units": 0.0,
+        "sp_prior_units": 0.0,
+        "tt_units": 0.0,
+        "tt_prior_units": 0.0,
+        "platform_units": 0.0,
+        "prior_platform_units": 0.0,
         "platform_gmv_rmb": 0.0,
         "platform_orders": 0.0,
         "offsite_spend": 0.0,
@@ -892,6 +1060,97 @@ def load_tt_gmv(path: Path, daily: dict[str, dict[str, Any]]) -> None:
         item["tt_orders"] += orders
         item["tt_gmv_local"] += gmv_local
         item["tt_gmv_rmb"] += gmv_rmb
+
+
+def previous_month_day(day: str) -> str:
+    current = datetime.strptime(day, "%Y-%m-%d").date()
+    month = current.month - 1 or 12
+    year = current.year if current.month > 1 else current.year - 1
+    next_month = month % 12 + 1
+    next_year = year + (1 if month == 12 else 0)
+    last_day = (date(next_year, next_month, 1) - timedelta(days=1)).day
+    return date(year, month, min(current.day, last_day)).isoformat()
+
+
+def load_dms_commerce(
+    path: Path,
+    daily: dict[str, dict[str, Any]],
+    category_ref: dict[str, Any],
+    category_daily: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"DMS commerce cache cannot be read: {type(exc).__name__}") from exc
+    if cache.get("brand") != "SKT" or cache.get("currency") != "RMB":
+        raise ValueError("DMS commerce cache is not the SKT RMB cache")
+    gmv_rows = cache.get("gmv")
+    unit_source_rows = cache.get("units")
+    if not isinstance(gmv_rows, list) or not isinstance(unit_source_rows, list):
+        raise ValueError("DMS commerce cache is missing GMV or unit rows")
+
+    store_rows: dict[str, dict[str, float]] = {
+        "DMS / Shopee": {"orders": 0.0, "gmv_sgd": 0.0, "gmv_rmb": 0.0, "gmv_after_seller_sgd": 0.0},
+    }
+    for row in gmv_rows:
+        day = parse_date(row.get("date"))
+        platform = clean_text(row.get("platform"))
+        if not day or platform not in {"Shopee", "TikTok"}:
+            continue
+        gmv_rmb = parse_number(row.get("gmv_rmb"))
+        orders = parse_number(row.get("orders"))
+        item = add_daily(daily, day)
+        if platform == "Shopee":
+            item["sp_gmv_rmb"] += gmv_rmb
+            item["sp_orders"] += orders
+            store_rows["DMS / Shopee"]["orders"] += orders
+            store_rows["DMS / Shopee"]["gmv_rmb"] += gmv_rmb
+        else:
+            item["tt_gmv_rmb"] += gmv_rmb
+            item["tt_orders"] += orders
+
+    source_by_key: dict[tuple[str, str, str], float] = {}
+    product_by_key: dict[tuple[str, str, str], str] = {}
+    for row in unit_source_rows:
+        day = parse_date(row.get("date"))
+        platform = clean_text(row.get("platform"))
+        sku = clean_text(row.get("sku"))
+        if not day or platform not in {"Shopee", "TikTok"} or not sku:
+            continue
+        key = (day, platform, normalize_text(sku))
+        source_by_key[key] = source_by_key.get(key, 0.0) + parse_number(row.get("units"))
+        product_by_key[key] = clean_text(row.get("product"))
+
+    unit_rows: list[dict[str, Any]] = []
+    for (day, platform, sku_key), units in sorted(source_by_key.items()):
+        product = product_by_key.get((day, platform, sku_key), "")
+        category = resolve_category(category_ref, sku_key, product, default="长尾品")
+        prior_units = source_by_key.get((previous_month_day(day), platform, sku_key), 0.0)
+        category_day = add_category_day(category_daily, day, category)
+        daily_row = add_daily(daily, day)
+        if platform == "Shopee":
+            category_day["sp_units"] += units
+            category_day["sp_prior_units"] += prior_units
+            daily_row["sp_units"] += units
+            daily_row["sp_prior_units"] += prior_units
+        else:
+            category_day["tt_units"] += units
+            category_day["tt_prior_units"] += prior_units
+            daily_row["tt_units"] += units
+            daily_row["tt_prior_units"] += prior_units
+        unit_rows.append(
+            {
+                "platform": "SP" if platform == "Shopee" else "TT",
+                "date": day,
+                "sku": sku_key,
+                "product": product,
+                "product_override": category_ref.get("sku_to_onsite_product", {}).get(sku_key, ""),
+                "category": category,
+                "units": units,
+                "prior_units": prior_units,
+            }
+        )
+    return store_rows, unit_rows
 
 
 def load_offsite(
@@ -1260,35 +1519,43 @@ def load_onsite_products(
         return [], [], []
 
     headers = raw_rows[0]
-    product_catalog: dict[tuple[str, str], dict[str, Any]] = {}
+    product_catalog: dict[str, dict[str, Any]] = {}
     for values in raw_rows[1:]:
         row = dict(zip(headers, values))
         if not parse_date(get_value(row, "日期date")):
             continue
-        category = clean_text(get_value(row, "品类"))
+        item_id = clean_text(get_value(row, "Item ID"))
+        item_key = normalize_text(item_id)
+        mapped_product = clean_text(category_ref.get("item_id_to_product", {}).get(item_key))
+        mapped_category = clean_text(category_ref.get("item_id_to_category", {}).get(item_key))
+        category = mapped_category or clean_text(get_value(row, "品类"))
         if not category:
             category = resolve_category(
                 category_ref,
-                get_value(row, "Item ID"),
+                item_id,
                 get_value(row, "链接"),
                 get_value(row, "Product"),
                 get_value(row, "SKU"),
             )
-        product = clean_text(get_value(row, "链接") or get_value(row, "Product")) or "未命名单品"
+        product = mapped_product or clean_text(get_value(row, "链接") or get_value(row, "Product")) or "未命名单品"
         row_fx = parse_number(get_value(row, "汇率", "Exchange Rate", "FX")) or fx_rate
         paid_sales_sgd = (
             parse_number(get_value(row, "Sales (Placed Order) (SGD)", "Sales (Paid Order) (SGD)"))
             / ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR
         )
+        product_key = onsite_product_identity(item_id, product, category)
         catalog_row = product_catalog.setdefault(
-            (normalize_text(product), category),
+            product_key,
             {
                 "product": product,
                 "category": category,
+                "item_id": item_id,
                 "product_title": clean_text(get_value(row, "Product")),
                 "paid_sales_rmb": 0.0,
             },
         )
+        if category_is_unclassified(catalog_row.get("category")) and not category_is_unclassified(category):
+            catalog_row["category"] = category
         catalog_row["paid_sales_rmb"] += paid_sales_sgd * row_fx
         title = clean_text(get_value(row, "Product"))
         if len(title) > len(clean_text(catalog_row.get("product_title"))):
@@ -1304,17 +1571,25 @@ def load_onsite_products(
         if not day:
             continue
 
-        category = str(get_value(row, "品类") or "").strip()
+        item_id = clean_text(get_value(row, "Item ID"))
+        item_key = normalize_text(item_id)
+        mapped_product = clean_text(category_ref.get("item_id_to_product", {}).get(item_key))
+        mapped_category = clean_text(category_ref.get("item_id_to_category", {}).get(item_key))
+        category = mapped_category or str(get_value(row, "品类") or "").strip()
         if not category:
             category = resolve_category(
                 category_ref,
-                get_value(row, "Item ID"),
+                item_id,
                 get_value(row, "链接"),
                 get_value(row, "Product"),
                 get_value(row, "SKU"),
             )
-        product = str(get_value(row, "链接") or get_value(row, "Product") or "未命名单品").strip() or "未命名单品"
-        item_id = clean_text(get_value(row, "Item ID"))
+        product = mapped_product or str(get_value(row, "链接") or get_value(row, "Product") or "未命名单品").strip() or "未命名单品"
+        product_key = onsite_product_identity(item_id, product, category)
+        catalog_row = product_catalog.get(product_key)
+        if catalog_row:
+            product = catalog_row["product"]
+            category = catalog_row["category"]
         advertised_product = canonical_offsite_product_name(
             onsite_advertised_products.get((normalize_text(product), category), "")
         )
@@ -1377,7 +1652,7 @@ def load_onsite_products(
         category_row["product_impressions"] += product_impressions
 
         product_row = by_product.setdefault(
-            (product, category),
+            (product_key, ""),
             {
                 "product": product,
                 "category": category,
@@ -1404,7 +1679,7 @@ def load_onsite_products(
         product_row["product_impressions"] += product_impressions
 
         product_day_row = by_product_day.setdefault(
-            (day, product, category),
+            (day, product_key, ""),
             {
                 "date": day,
                 "product": product,
@@ -1458,6 +1733,7 @@ def load_platform_units(
     platform: str,
     category_ref: dict[str, Any],
     category_daily: dict[tuple[str, str], dict[str, Any]],
+    daily: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for row in read_csv(path):
@@ -1476,6 +1752,14 @@ def load_platform_units(
         else:
             category_day["tt_units"] += units
             category_day["tt_prior_units"] += prior_units
+        if daily is not None:
+            daily_row = add_daily(daily, day)
+            if platform == "SP":
+                daily_row["sp_units"] += units
+                daily_row["sp_prior_units"] += prior_units
+            else:
+                daily_row["tt_units"] += units
+                daily_row["tt_prior_units"] += prior_units
         rows.append(
             {
                 "platform": platform,
@@ -1900,6 +2184,8 @@ def redistribute_catalog_offsite(
 def finalize_daily_rows(daily: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     rows = [daily[day] for day in sorted(daily)]
     for row in rows:
+        row["platform_units"] = row["sp_units"] + row["tt_units"]
+        row["prior_platform_units"] = row["sp_prior_units"] + row["tt_prior_units"]
         row["platform_gmv_rmb"] = row["sp_gmv_rmb"] + row["tt_gmv_rmb"]
         row["platform_orders"] = row["sp_orders"] + row["tt_orders"]
         row["sp_share"] = row["sp_gmv_rmb"] / row["platform_gmv_rmb"] if row["platform_gmv_rmb"] else None
@@ -1978,15 +2264,249 @@ def build_summary(daily_rows: list[dict[str, Any]], fx_rate: float) -> dict[str,
     }
 
 
+def load_voucher_rows(path: Path, category_ref: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"优惠券缓存不存在：{path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    expected_columns = ["date", "product_id", "voucher_spend_sgd"]
+    if payload.get("columns") != expected_columns:
+        raise ValueError("优惠券缓存字段不符合约定")
+    metadata = payload.get("metadata") or {}
+    source_rows = payload.get("rows") or []
+    if metadata.get("brand") != "SKT" or metadata.get("source_table") != VOUCHER_SOURCE_TABLE:
+        raise ValueError("优惠券缓存来源不在 SKT 白名单")
+    if not isinstance(source_rows, list) or not source_rows:
+        raise ValueError("优惠券缓存为空")
+    if int(metadata.get("row_count") or 0) != len(source_rows):
+        raise ValueError("优惠券缓存行数无法对账")
+
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    unmapped_ids: set[str] = set()
+    today = datetime.now(SHANGHAI_TIMEZONE).date().isoformat()
+    for values in source_rows:
+        if not isinstance(values, list) or len(values) != len(expected_columns):
+            raise ValueError("优惠券缓存存在异常行")
+        day = parse_date(values[0])
+        item_id = clean_text(values[1])
+        if not day or day > today or not re.fullmatch(r"\d+", item_id):
+            raise ValueError("优惠券缓存存在无效日期或 Item ID")
+        key = (day, item_id)
+        if key in seen:
+            raise ValueError("优惠券缓存存在重复的日期 / Item ID")
+        seen.add(key)
+        spend_sgd = parse_number(values[2])
+        item_key = normalize_text(item_id)
+        product = clean_text(category_ref.get("item_id_to_product", {}).get(item_key))
+        category = clean_text(category_ref.get("item_id_to_category", {}).get(item_key))
+        if not category:
+            unmapped_ids.add(item_id)
+            category = "长尾品"
+        output.append(
+            {
+                "date": day,
+                "item_id": item_id,
+                "product": product or item_id,
+                "category": category,
+                "voucher_spend_sgd": spend_sgd,
+                "voucher_spend_rmb": spend_sgd * VOUCHER_SGD_TO_RMB,
+            }
+        )
+    output.sort(key=lambda row: (row["date"], int(row["item_id"])))
+    total_sgd = sum(row["voucher_spend_sgd"] for row in output)
+    return output, {
+        **metadata,
+        "row_count": len(output),
+        "product_count": len({row["item_id"] for row in output}),
+        "mapped_item_ids": len({row["item_id"] for row in output}) - len(unmapped_ids),
+        "unmapped_item_ids": sorted(unmapped_ids, key=int),
+        "voucher_spend_sgd": round(total_sgd, 6),
+        "voucher_spend_rmb": round(total_sgd * VOUCHER_SGD_TO_RMB, 6),
+    }
+
+
+def enrich_payload_with_vouchers(
+    payload: dict[str, Any], category_ref: dict[str, Any], cache_path: Path
+) -> dict[str, Any]:
+    voucher_rows, metadata = load_voucher_rows(cache_path, category_ref)
+    source_total_sgd = sum(row["voucher_spend_sgd"] for row in voucher_rows)
+
+    product_daily_rows = payload.setdefault("product_daily_rows", [])
+    product_daily_index: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in product_daily_rows:
+        day = clean_text(row.get("date"))
+        item_id = clean_text(row.get("item_id"))
+        if day and item_id:
+            key = (day, item_id)
+            if key in product_daily_index:
+                raise ValueError(f"商品日明细存在重复日期 / Item ID：{day}|{item_id}")
+            product_daily_index[key] = row
+        row["voucher_spend_sgd"] = 0.0
+        row["voucher_spend_rmb"] = 0.0
+
+    synthetic_product_day_rows = 0
+    for voucher_row in voucher_rows:
+        key = (voucher_row["date"], voucher_row["item_id"])
+        target = product_daily_index.get(key)
+        if target is None:
+            target = {
+                "date": voucher_row["date"],
+                "product": voucher_row["product"],
+                "category": voucher_row["category"],
+                "item_id": voucher_row["item_id"],
+                "paid_sales_sgd": 0.0,
+                "paid_sales_rmb": 0.0,
+                "paid_units": 0.0,
+                "visitors": 0.0,
+                "page_views": 0.0,
+                "add_to_cart_visitors": 0.0,
+                "product_clicks": 0.0,
+                "product_impressions": 0.0,
+                "voucher_spend_sgd": 0.0,
+                "voucher_spend_rmb": 0.0,
+            }
+            product_daily_rows.append(target)
+            product_daily_index[key] = target
+            synthetic_product_day_rows += 1
+        target["product"] = voucher_row["product"] or target.get("product") or voucher_row["item_id"]
+        target["category"] = voucher_row["category"]
+        target["voucher_spend_sgd"] += voucher_row["voucher_spend_sgd"]
+        target["voucher_spend_rmb"] += voucher_row["voucher_spend_rmb"]
+    for row in product_daily_rows:
+        sales_rmb = float(row.get("paid_sales_rmb") or 0.0)
+        row["voucher_ratio"] = float(row.get("voucher_spend_rmb") or 0.0) / sales_rmb if sales_rmb else None
+    product_daily_rows.sort(key=lambda row: (clean_text(row.get("date")), float(row.get("paid_sales_rmb") or 0.0)), reverse=True)
+
+    voucher_by_item: dict[str, dict[str, float]] = {}
+    for row in voucher_rows:
+        target = voucher_by_item.setdefault(row["item_id"], {"sgd": 0.0, "rmb": 0.0})
+        target["sgd"] += row["voucher_spend_sgd"]
+        target["rmb"] += row["voucher_spend_rmb"]
+    for row in payload.get("product_rows", []):
+        voucher = voucher_by_item.get(clean_text(row.get("item_id")), {"sgd": 0.0, "rmb": 0.0})
+        row["voucher_spend_sgd"] = voucher["sgd"]
+        row["voucher_spend_rmb"] = voucher["rmb"]
+        sales_rmb = float(row.get("paid_sales_rmb") or 0.0)
+        row["voucher_ratio"] = voucher["rmb"] / sales_rmb if sales_rmb else None
+
+    category_daily_rows = payload.setdefault("category_daily_rows", [])
+    category_daily_index = {
+        (clean_text(row.get("date")), clean_text(row.get("category")) or "长尾品"): row
+        for row in category_daily_rows
+    }
+    for row in category_daily_rows:
+        row["voucher_spend_sgd"] = 0.0
+        row["voucher_spend_rmb"] = 0.0
+    for voucher_row in voucher_rows:
+        key = (voucher_row["date"], voucher_row["category"])
+        target = category_daily_index.get(key)
+        if target is None:
+            target = {
+                "date": key[0],
+                "category": key[1],
+                "product_paid_sales_rmb": 0.0,
+                "voucher_spend_sgd": 0.0,
+                "voucher_spend_rmb": 0.0,
+            }
+            category_daily_rows.append(target)
+            category_daily_index[key] = target
+        target["voucher_spend_sgd"] += voucher_row["voucher_spend_sgd"]
+        target["voucher_spend_rmb"] += voucher_row["voucher_spend_rmb"]
+    for row in category_daily_rows:
+        sales_rmb = float(row.get("product_paid_sales_rmb") or 0.0)
+        row["voucher_ratio"] = float(row.get("voucher_spend_rmb") or 0.0) / sales_rmb if sales_rmb else None
+    category_daily_rows.sort(key=lambda row: (clean_text(row.get("date")), clean_text(row.get("category"))))
+
+    voucher_by_category: dict[str, dict[str, float]] = {}
+    for row in voucher_rows:
+        target = voucher_by_category.setdefault(row["category"], {"sgd": 0.0, "rmb": 0.0})
+        target["sgd"] += row["voucher_spend_sgd"]
+        target["rmb"] += row["voucher_spend_rmb"]
+    category_rows = payload.setdefault("category_rows", [])
+    category_index = {clean_text(row.get("category")) or "长尾品": row for row in category_rows}
+    for row in category_rows:
+        row["voucher_spend_sgd"] = 0.0
+        row["voucher_spend_rmb"] = 0.0
+        row["voucher_ratio"] = None
+    for category, voucher in voucher_by_category.items():
+        target = category_index.get(category)
+        if target is None:
+            target = {"category": category, "product_paid_sales_rmb": 0.0}
+            category_rows.append(target)
+            category_index[category] = target
+        target["voucher_spend_sgd"] = voucher["sgd"]
+        target["voucher_spend_rmb"] = voucher["rmb"]
+        sales_rmb = float(target.get("product_paid_sales_rmb") or 0.0)
+        target["voucher_ratio"] = voucher["rmb"] / sales_rmb if sales_rmb else None
+    category_rows.sort(key=lambda row: float(row.get("product_paid_sales_rmb") or 0.0), reverse=True)
+
+    daily_index = {clean_text(row.get("date")): row for row in payload.get("daily_rows", [])}
+    for row in payload.get("daily_rows", []):
+        row["voucher_spend_sgd"] = 0.0
+        row["voucher_spend_rmb"] = 0.0
+    for voucher_row in voucher_rows:
+        target = daily_index.get(voucher_row["date"])
+        if target is not None:
+            target["voucher_spend_sgd"] += voucher_row["voucher_spend_sgd"]
+            target["voucher_spend_rmb"] += voucher_row["voucher_spend_rmb"]
+    for row in payload.get("daily_rows", []):
+        sales_rmb = float(row.get("product_paid_sales_rmb") or 0.0)
+        row["voucher_ratio"] = float(row.get("voucher_spend_rmb") or 0.0) / sales_rmb if sales_rmb else None
+
+    assigned_product_sgd = sum(float(row.get("voucher_spend_sgd") or 0.0) for row in product_daily_rows)
+    assigned_category_sgd = sum(float(row.get("voucher_spend_sgd") or 0.0) for row in category_daily_rows)
+    if abs(assigned_product_sgd - source_total_sgd) > 0.0001:
+        raise ValueError("优惠券商品日明细无法与 BQ 缓存对账")
+    if abs(assigned_category_sgd - source_total_sgd) > 0.0001:
+        raise ValueError("优惠券品类日明细无法与 BQ 缓存对账")
+
+    group_map = category_ref.get("category_group_map_normalized", {})
+    voucher_by_group: dict[str, float] = {}
+    for voucher_row in voucher_rows:
+        group = group_map.get(normalize_text(voucher_row["category"]), "未分组")
+        voucher_by_group[group] = voucher_by_group.get(group, 0.0) + voucher_row["voucher_spend_sgd"]
+    audit = {
+        "source_table": VOUCHER_SOURCE_TABLE,
+        "definition": metadata.get("definition"),
+        "currency": "SGD",
+        "fx_rate": VOUCHER_SGD_TO_RMB,
+        "date_start": metadata.get("date_start"),
+        "date_end": metadata.get("date_end"),
+        "source_loaded_at": metadata.get("source_loaded_at"),
+        "row_count": len(voucher_rows),
+        "product_count": len({row["item_id"] for row in voucher_rows}),
+        "mapped_item_ids": metadata["mapped_item_ids"],
+        "unmapped_item_ids": metadata["unmapped_item_ids"],
+        "synthetic_product_day_rows": synthetic_product_day_rows,
+        "voucher_spend_sgd": round(source_total_sgd, 6),
+        "voucher_spend_rmb": round(source_total_sgd * VOUCHER_SGD_TO_RMB, 6),
+        "product_reconciliation_sgd": round(assigned_product_sgd, 6),
+        "category_reconciliation_sgd": round(assigned_category_sgd, 6),
+        "group_totals_sgd": {group: round(value, 6) for group, value in sorted(voucher_by_group.items())},
+        "category_mapping": "新映射 > 品类表",
+    }
+    payload["voucher_audit"] = audit
+    return audit
+
+
 def build_payload() -> dict[str, Any]:
     paths = ensure_source_csvs()
     fx_rate = extract_fx_rate(paths["category_map"])
-    category_ref = load_category_reference(paths["category_map"])
+    category_ref = load_category_reference(paths["category_map"], paths.get("new_mapping"))
     daily: dict[str, dict[str, Any]] = {}
     category_daily: dict[tuple[str, str], dict[str, Any]] = {}
 
-    store_rows = load_sp_gmv(paths["sp_gmv"], daily, fx_rate)
-    load_tt_gmv(paths["tt_gmv"], daily)
+    dms_commerce_available = DMS_COMMERCE_CACHE_PATH.is_file() and DMS_COMMERCE_CACHE_PATH.stat().st_size > 0
+    if dms_commerce_available:
+        store_rows, unit_rows = load_dms_commerce(
+            DMS_COMMERCE_CACHE_PATH, daily, category_ref, category_daily
+        )
+    else:
+        store_rows = load_sp_gmv(paths["sp_gmv"], daily, fx_rate)
+        load_tt_gmv(paths["tt_gmv"], daily)
+        unit_rows = load_platform_units(paths["sp_units"], "SP", category_ref, category_daily, daily) + load_platform_units(
+            paths["tt_units"], "TT", category_ref, category_daily, daily
+        )
     (
         offsite_product_rows,
         offsite_type_rows,
@@ -2005,9 +2525,6 @@ def build_payload() -> dict[str, Any]:
     product_category_rows, product_rows, product_daily_rows = load_onsite_products(
         paths["onsite_products"], daily, fx_rate, category_ref, category_daily
     )
-    unit_rows = load_platform_units(paths["sp_units"], "SP", category_ref, category_daily) + load_platform_units(
-        paths["tt_units"], "TT", category_ref, category_daily
-    )
     unit_mapping_gaps = attach_platform_units_to_products(unit_rows, product_rows, product_daily_rows)
     offsite_mapping_gaps = build_offsite_product_mapping_gaps(category_ref, product_rows)
     redistribute_catalog_offsite(category_daily, category_ref)
@@ -2018,6 +2535,7 @@ def build_payload() -> dict[str, Any]:
     payload = {
         "brand": "SKT",
         "market": "Singapore",
+        "report_contract_version": REPORT_CONTRACT_VERSION,
         "spreadsheet_url": f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit?usp=sharing",
         "summary": build_summary(daily_rows, fx_rate),
         "daily_rows": daily_rows,
@@ -2046,6 +2564,10 @@ def build_payload() -> dict[str, Any]:
             "shop_count": category_ref["shop_count"],
             "offsite_product_count": category_ref["offsite_product_count"],
             "offsite_products": category_ref["offsite_products"],
+            "new_mapping_item_count": category_ref["new_mapping_item_count"],
+            "new_mapping_source_rows": category_ref["new_mapping_source_rows"],
+            "new_mapping_conflicts": category_ref["new_mapping_conflicts"],
+            "group_order": category_ref["group_order"],
             "onsite_product_match_count": len(
                 {
                     row.get("advertised_product")
@@ -2054,6 +2576,9 @@ def build_payload() -> dict[str, Any]:
                 }
             ),
         },
+        "category_group_map": category_ref["category_group_map"],
+        "category_group_map_normalized": category_ref["category_group_map_normalized"],
+        "group_order": category_ref["group_order"],
         "unit_rows_sample_size": len(unit_rows),
         "product_mapping_quality": {
             "platform_unit_product_count": len(
@@ -2068,17 +2593,17 @@ def build_payload() -> dict[str, Any]:
         "field_map": [
             {
                 "module": "平台GMV-SP",
-                "sheet": "SP店铺实收GMV",
-                "date": "日期date",
-                "metric": "GMV(After Seller Discounts)（I列）",
-                "normalization": f"SGD x 汇率 {fx_rate:g} -> RMB",
+                "sheet": "DMS / SP店铺实收GMV",
+                "date": "DMS日接口",
+                "metric": "salesPriceSumRmb",
+                "normalization": "DMS已返回人民币，直接使用，不再乘汇率",
             },
             {
                 "module": "平台GMV-TT",
-                "sheet": "TT-销售GMV",
-                "date": "Order Date",
-                "metric": "GMV(After seller discounts) RMB",
-                "normalization": "直接使用 RMB 字段",
+                "sheet": "DMS / TT-销售GMV",
+                "date": "DMS日接口",
+                "metric": "salesPriceSumRmb",
+                "normalization": "DMS已返回人民币，直接使用",
             },
             {
                 "module": "站外",
@@ -2099,23 +2624,49 @@ def build_payload() -> dict[str, Any]:
                 "sheet": "站内产品数据-skt",
                 "date": "日期date",
                 "metric": "Sales (Placed Order) (SGD) / 汇率 / Units / Visitors / ATC",
-                "normalization": "L 列 Sales (Placed Order) (SGD) x 行级汇率 -> RMB 商品 GMV",
+                "normalization": "按字段名读取 Sales (Placed Order) (SGD)，再乘行级汇率 -> RMB 商品 GMV；不依赖物理列位",
             },
             {
                 "module": "品类映射",
                 "sheet": "品类表",
                 "date": "无",
                 "metric": "Item ID / 单品 / SKU / 产品名 / 品类 / 汇率 / T列站外投放产品 / R-U列人工映射",
-                "normalization": "用于 SP 汇率、品类归因及站外产品清单；R列指定 SKU 对应站内商品，U列指定 T列站外产品对应站内商品，可填商品名或 Item ID",
+                "normalization": "作为新映射未命中 Item ID 的兜底；同时用于 SP 汇率、站外产品清单及 R-U 人工映射",
+            },
+            {
+                "module": "新映射与分组",
+                "sheet": "新映射",
+                "date": "无",
+                "metric": "分组 / 品类 / Item ID / 产品 / 品类",
+                "normalization": "按字段名读取并填充空白分组；Item ID、产品、品类和分组优先于品类表",
+            },
+            {
+                "module": "优惠券",
+                "sheet": "BigQuery sg_skt_onsite_voucher_cost_by_item",
+                "date": "period_start",
+                "metric": "net_voucher_cost_sgd",
+                "normalization": f"按 Item ID 汇总净优惠券成本（商家承担 - Shopee承担），1 SGD = {VOUCHER_SGD_TO_RMB:g} RMB；优惠券占比 = 优惠券花费RMB / 商品销售额RMB",
             },
             {
                 "module": "品类销量补充",
-                "sheet": "SP-销量 / TT-销量",
-                "date": "日期",
-                "metric": "SKU编码 / 销量 / 上月同期销售 / 品类",
-                "normalization": "按 SKU/产品/品类汇总到品类和单品日维度；模糊商品由品类表 R列指定站内商品",
+                "sheet": "DMS / SP-销量 + TT-销量",
+                "date": "recordDate",
+                "metric": "sku / skuName / dailyDatas.count",
+                "normalization": "DMS日SKU销量转成长表；品类按新映射 > 品类表匹配，未命中归入长尾品",
             },
         ],
+    }
+    payload["commerce_source"] = "DMS" if dms_commerce_available else "Google Sheet fallback"
+    voucher_audit = enrich_payload_with_vouchers(payload, category_ref, VOUCHER_CACHE_PATH)
+    payload["summary"].setdefault("freshness", {})["voucher"] = voucher_audit["date_end"]
+    payload["assumptions"] = {
+        "category_mapping": "新映射 > 品类表",
+        "new_mapping_rows": category_ref["new_mapping_source_rows"],
+        "new_mapping_item_count": category_ref["new_mapping_item_count"],
+        "voucher_audit": voucher_audit,
+        "voucher_definition": "seller_voucher_cost - shopee_voucher_cost_on_same_order_item",
+        "voucher_ratio": "voucher_spend_rmb / product_paid_sales_rmb",
+        "voucher_sgd_to_rmb": VOUCHER_SGD_TO_RMB,
     }
     return payload
 
@@ -2845,6 +3396,52 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       visibility: hidden;
       cursor: default;
     }
+    .group-row-toggle {
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid #bfdbfe;
+      border-radius: 5px;
+      background: #fff;
+      color: var(--accent);
+      font: inherit;
+      font-size: 17px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .group-row-toggle:hover {
+      border-color: var(--accent);
+      background: #dbeafe;
+    }
+    .group-row-toggle span {
+      transition: transform 160ms ease;
+    }
+    .group-row-toggle[aria-expanded="true"] span {
+      transform: rotate(90deg);
+    }
+    .group-row-toggle:disabled {
+      visibility: hidden;
+      cursor: default;
+    }
+    .group-category-row[hidden] {
+      display: none;
+    }
+    .group-category-row td {
+      background: #f8fbff !important;
+    }
+    .group-category-name {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding-left: 18px;
+    }
+    .group-category-indent {
+      color: var(--accent);
+      font-weight: 900;
+    }
     .category-summary-name {
       display: flex;
       align-items: baseline;
@@ -2874,8 +3471,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .category-products-grid {
       display: grid;
-      grid-template-columns: minmax(190px, 1.8fr) repeat(15, minmax(78px, 1fr));
-      min-width: 1550px;
+      grid-template-columns: minmax(190px, 1.8fr) repeat(14, minmax(78px, 1fr));
+      min-width: 1480px;
       align-items: stretch;
     }
     .category-products-grid > div {
@@ -2884,7 +3481,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       border-bottom: 1px solid #dbe7f5;
       text-align: right;
     }
-    .category-products-grid > div:nth-child(16n + 1) {
+    .category-products-grid > div:nth-child(15n + 1) {
       text-align: left;
     }
     .category-products-head > div {
@@ -3422,12 +4019,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="side-nav-links" id="sideNavLinks">
         <a href="#summary">核心指标</a>
         <a href="#period">周期对比</a>
-        <a href="#narrative">经营复盘</a>
+        <a href="#narrative">复盘</a>
         <a href="#trend">GMV 趋势</a>
         <a href="#platform-split">渠道与漏斗</a>
         <a href="#category-overview">品类结构</a>
         <a href="#visitor-conversion">访客转化</a>
         <a href="#product-visitor-conversion">产品转化</a>
+        <a href="#group-detail">分组明细</a>
         <a href="#category-detail">品类明细</a>
         <a href="#product-drilldown">产品明细</a>
         <a href="#offsite-product-detail">站外产品</a>
@@ -3532,7 +4130,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div>
           <div class="section-head">
             <div>
-              <h2>经营判断</h2>
+              <h2>判断</h2>
               <p class="section-note">基于当前字段可支撑的业务诊断。</p>
             </div>
           </div>
@@ -3577,13 +4175,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       </div>
     </section>
 
+    <section class="section" id="group-detail">
+      <div class="section-head">
+        <div>
+          <h2>分组明细</h2>
+          <p class="section-note">按新映射中的分组与品类关系汇总；点击分组左侧箭头可展开查看该分组下的品类，字段与品类明细保持一致。</p>
+        </div>
+      </div>
+      <div class="table-wrap" id="groupTable"></div>
+    </section>
+
     <section class="section" id="category-detail">
       <div class="section-head">
         <div>
-          <h2>品类经营明细</h2>
+          <h2>品类明细</h2>
           <p class="section-note">点击品类左侧箭头可展开当前品类全部商品，并查看商品 GMV、销量、访客、加购和转化表现。</p>
         </div>
-        <button class="category-section-toggle" id="categorySectionToggle" type="button" aria-controls="categoryTable" aria-expanded="true" aria-label="收起品类经营明细" title="收起品类经营明细">
+        <button class="category-section-toggle" id="categorySectionToggle" type="button" aria-controls="categoryTable" aria-expanded="true" aria-label="收起品类明细" title="收起品类明细">
           <span aria-hidden="true">⌃</span>
         </button>
       </div>
@@ -3593,7 +4201,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <section class="section" id="product-drilldown">
       <div class="section-head">
         <div>
-          <h2>产品经营明细</h2>
+          <h2>产品明细</h2>
           <p class="section-note">按「站内产品数据-skt」拆到单品并保留归因品类；字段随日期与品类筛选刷新，数值下方为当前周期对比上周期。</p>
         </div>
       </div>
@@ -3604,7 +4212,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="section-head">
         <div>
           <h2>站外产品投放明细</h2>
-          <p class="section-note">已投放产品以「品类表」T列为准，并与站内商品一对一匹配；其余站内有经营数据的商品列入“未投放产品”。SP商品GMV、占比及站外指标均随日期和品类筛选刷新，并对比上期。</p>
+          <p class="section-note">已投放产品以「品类表」T列为准，并与站内商品一对一匹配；其余站内有数据的商品列入“未投放产品”。SP商品GMV、占比及站外指标均随日期和品类筛选刷新，并对比上期。</p>
         </div>
       </div>
       <div class="table-wrap" id="offsiteProductTable"></div>
@@ -3872,9 +4480,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const total = {
         platform_gmv_rmb: sum(rows, 'platform_gmv_rmb'),
         sp_gmv_rmb: sum(rows, 'sp_gmv_rmb'),
-        tt_gmv_rmb: sum(rows, 'tt_gmv_rmb'),
-        platform_orders: sum(rows, 'platform_orders'),
-        offsite_spend: sum(rows, 'offsite_spend'),
+         tt_gmv_rmb: sum(rows, 'tt_gmv_rmb'),
+         platform_orders: sum(rows, 'platform_orders'),
+         platform_units: sum(rows, 'platform_units'),
+         offsite_spend: sum(rows, 'offsite_spend'),
         offsite_purchase_value: sum(rows, 'offsite_purchase_value'),
         offsite_spend_rmb: sum(rows, 'offsite_spend_rmb'),
         offsite_purchase_value_rmb: sum(rows, 'offsite_purchase_value_rmb'),
@@ -4002,9 +4611,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         },
         {
           label: '站内销量',
-          value: fmt0.format(t.product_paid_units),
-          current: t.product_paid_units,
-          previous: p.product_paid_units,
+          value: fmt0.format(t.platform_units),
+          current: t.platform_units,
+          previous: p.platform_units,
           subs: [
             ['AOV', t.product_aov, p.product_aov, compactMoney],
             ['订单', t.platform_orders, p.platform_orders, value => fmt0.format(n(value))],
@@ -4401,6 +5010,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       row.unit_conversion_rate = n(row.product_visitors) ? n(row.product_paid_units) / n(row.product_visitors) : null;
       row.sales_per_visitor = n(row.product_visitors) ? n(row.product_paid_sales_rmb) / n(row.product_visitors) : null;
       row.media_spend_ratio = n(row.product_paid_sales_rmb) ? row.media_spend_rmb / n(row.product_paid_sales_rmb) : null;
+      row.voucher_ratio = n(row.product_paid_sales_rmb) ? n(row.voucher_spend_rmb) / n(row.product_paid_sales_rmb) : null;
       return row;
     }
     function aggregateCategoryRows(rows) {
@@ -4466,10 +5076,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             add_to_cart_visitors: 0,
             product_clicks: 0,
             product_impressions: 0,
+            voucher_spend_sgd: 0,
+            voucher_spend_rmb: 0,
           });
           const target = byProduct.get(key);
           target.platform_units_available = target.platform_units_available || Boolean(row.platform_units_available);
-          ['paid_sales_sgd', 'paid_sales_rmb', 'paid_units', 'sp_units', 'sp_prior_units', 'tt_units', 'tt_prior_units', 'visitors', 'page_views', 'add_to_cart_visitors', 'product_clicks', 'product_impressions']
+          ['paid_sales_sgd', 'paid_sales_rmb', 'paid_units', 'sp_units', 'sp_prior_units', 'tt_units', 'tt_prior_units', 'visitors', 'page_views', 'add_to_cart_visitors', 'product_clicks', 'product_impressions', 'voucher_spend_sgd', 'voucher_spend_rmb']
             .forEach(field => { target[field] += n(row[field]); });
         });
       const rows = [...byProduct.values()];
@@ -4480,6 +5092,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         row.add_to_cart_rate = row.visitors ? row.add_to_cart_visitors / row.visitors : null;
         row.ctr = row.product_impressions ? row.product_clicks / row.product_impressions : null;
         row.gmv_share = productSalesTotal ? row.paid_sales_rmb / productSalesTotal : null;
+        row.voucher_ratio = row.paid_sales_rmb ? row.voucher_spend_rmb / row.paid_sales_rmb : null;
         row.platform_units = n(row.sp_units) + n(row.tt_units);
         row.prior_platform_units = n(row.sp_prior_units) + n(row.tt_prior_units);
         row.unit_growth = row.prior_platform_units
@@ -5018,6 +5631,191 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         byId('insightList').innerHTML = insights.map(text => `<li>${escapeHtml(text)}</li>`).join('');
       }
     }
+    const GROUP_METRIC_FIELDS = [
+      'product_paid_sales_rmb', 'product_paid_sales_sgd', 'product_paid_units',
+      'product_visitors', 'product_page_views', 'product_add_to_cart_visitors',
+      'product_clicks', 'product_impressions', 'sp_units', 'sp_prior_units',
+      'tt_units', 'tt_prior_units', 'onsite_spend_rmb', 'onsite_ad_gmv_rmb',
+      'onsite_impressions', 'onsite_clicks', 'onsite_conversions', 'onsite_items_sold',
+      'offsite_spend_rmb', 'offsite_purchase_value_rmb', 'offsite_spend',
+      'offsite_purchase_value', 'offsite_conversions', 'offsite_clicks', 'offsite_add_to_cart',
+      'voucher_spend_sgd', 'voucher_spend_rmb',
+    ];
+    function groupsForCategory(category) {
+      const parts = String(category || '长尾品')
+        .split(/\\s*\\/\\s*/)
+        .map(value => value.trim())
+        .filter(Boolean);
+      const directMap = DATA.category_group_map || {};
+      const normalizedMap = DATA.category_group_map_normalized || {};
+      const groups = [];
+      parts.forEach(part => {
+        const group = directMap[part] || normalizedMap[normalizeProductKey(part)] || '未分组';
+        if (!groups.includes(group)) groups.push(group);
+      });
+      return groups.length ? groups : ['未分组'];
+    }
+    function aggregateGroupRows(categoryDailyRows) {
+      const byGroup = new Map();
+      (categoryDailyRows || []).forEach(row => {
+        const groups = groupsForCategory(row.category);
+        const allocation = 1 / groups.length;
+        groups.forEach(group => {
+          if (!byGroup.has(group)) byGroup.set(group, { group, category: group });
+          const target = byGroup.get(group);
+          GROUP_METRIC_FIELDS.forEach(field => {
+            target[field] = n(target[field]) + n(row[field]) * allocation;
+          });
+        });
+      });
+      const result = [...byGroup.values()].map(row => {
+        row.category = row.group;
+        return addCategoryDerived(row);
+      });
+      const salesTotal = sum(result, 'product_paid_sales_rmb');
+      const mediaTotal = sum(result, 'media_spend_rmb');
+      const unitTotal = sum(result, 'platform_units');
+      result.forEach(row => {
+        row.sales_share = salesTotal ? n(row.product_paid_sales_rmb) / salesTotal : null;
+        row.media_share = mediaTotal ? n(row.media_spend_rmb) / mediaTotal : null;
+        row.unit_share = unitTotal ? n(row.platform_units) / unitTotal : null;
+      });
+      const order = DATA.group_order || [];
+      const rank = group => {
+        const index = order.indexOf(group);
+        return index < 0 ? order.length + 1 : index;
+      };
+      result.sort((a, b) => rank(a.group) - rank(b.group) || n(b.product_paid_sales_rmb) - n(a.product_paid_sales_rmb));
+      return result;
+    }
+    function groupCategoryRowsByGroup(categoryRows) {
+      const byGroup = new Map();
+      (categoryRows || []).forEach(row => {
+        const groups = groupsForCategory(row.category);
+        const allocation = 1 / groups.length;
+        groups.forEach(group => {
+          const categoryRow = { ...row, group };
+          GROUP_METRIC_FIELDS.forEach(field => {
+            categoryRow[field] = n(row[field]) * allocation;
+          });
+          addCategoryDerived(categoryRow);
+          ['sales_share', 'media_share', 'unit_share'].forEach(field => {
+            categoryRow[field] = row[field] == null ? null : n(row[field]) * allocation;
+          });
+          if (!byGroup.has(group)) byGroup.set(group, []);
+          byGroup.get(group).push(categoryRow);
+        });
+      });
+      byGroup.forEach(rows => rows.sort((a, b) => n(b.product_paid_sales_rmb) - n(a.product_paid_sales_rmb)));
+      return byGroup;
+    }
+    function groupMetricCells(row, previous) {
+      return `
+        <td>${tableMetricHtml(row.product_paid_sales_rmb, previous.product_paid_sales_rmb, money)}</td>
+        <td>${tableMetricHtml(row.sales_share, previous.sales_share, ratio, { neutral: true })}</td>
+        <td>${tableMetricHtml(row.product_visitors, previous.product_visitors, value => fmt0.format(n(value)))}</td>
+        <td>${tableMetricHtml(row.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</td>
+        <td>${tableMetricHtml(row.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</td>
+        <td>${tableMetricHtml(row.onsite_spend_rmb, previous.onsite_spend_rmb, money, { neutral: true })}</td>
+        <td>${tableMetricHtml(row.onsite_roas, previous.onsite_roas, roas)}</td>
+        <td>${tableMetricHtml(row.offsite_spend_rmb, previous.offsite_spend_rmb, money, { neutral: true })}</td>
+        <td>${tableMetricHtml(row.offsite_roas, previous.offsite_roas, roas)}</td>
+        <td>${tableMetricHtml(row.media_spend_rmb, previous.media_spend_rmb, money, { neutral: true })}</td>
+        <td>${tableMetricHtml(row.media_roas, previous.media_roas, roas)}</td>
+        <td>${tableMetricHtml(row.media_spend_ratio, previous.media_spend_ratio, ratio, { inverse: true })}</td>
+        <td>${tableMetricHtml(row.voucher_spend_rmb, previous.voucher_spend_rmb, money, { neutral: true })}</td>
+        <td>${tableMetricHtml(row.voucher_ratio, previous.voucher_ratio, ratio, { inverse: true })}</td>
+      `;
+    }
+    function renderGroupTable(groupRows, compareGroupRows, categoryRows, compareCategoryRows) {
+      const rows = (groupRows || []).slice(0, 40);
+      if (!rows.length) {
+        byId('groupTable').innerHTML = '<div class="empty-state">当前周期暂无分组数据</div>';
+        return;
+      }
+      const compareByGroup = new Map((compareGroupRows || []).map(row => [row.group, row]));
+      const categoriesByGroup = groupCategoryRowsByGroup(categoryRows);
+      const compareCategoriesByGroup = groupCategoryRowsByGroup(compareCategoryRows);
+      const compareByGroupCategory = new Map();
+      compareCategoriesByGroup.forEach((categoryList, group) => {
+        categoryList.forEach(row => compareByGroupCategory.set(`${group}||${row.category}`, row));
+      });
+      byId('groupTable').innerHTML = `
+        <table class="group-detail-table category-detail-table">
+          <thead>
+            <tr>
+              <th aria-label="展开品类"></th><th>分组</th><th>商品销售额RMB</th><th>销售占比</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th><th>优惠券花费</th><th>优惠券占比</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(row => {
+              const previous = compareByGroup.get(row.group) || {};
+              const categoryDetails = categoriesByGroup.get(row.group) || [];
+              const detailId = `groupCategories-${rows.indexOf(row)}`;
+              const categoryRowsHtml = categoryDetails.map((categoryRow, categoryIndex) => {
+                const previousCategory = compareByGroupCategory.get(`${row.group}||${categoryRow.category}`) || {};
+                return `
+                  <tr class="group-category-row" data-group-category-parent="${escapeHtml(row.group)}"${categoryIndex === 0 ? ` id="${detailId}"` : ''} hidden>
+                    <td></td>
+                    <td><div class="group-category-name"><span class="group-category-indent" aria-hidden="true">↳</span><strong>${escapeHtml(categoryRow.category)}</strong></div></td>
+                    ${groupMetricCells(categoryRow, previousCategory)}
+                  </tr>
+                `;
+              }).join('');
+              return `
+                <tr class="group-summary-row">
+                  <td>
+                    <button class="group-row-toggle" type="button" data-group-row-key="${escapeHtml(row.group)}" aria-controls="${detailId}" aria-expanded="false" aria-label="展开${escapeHtml(row.group)}品类" title="展开品类" ${categoryDetails.length ? '' : 'disabled'}>
+                      <span aria-hidden="true">›</span>
+                    </button>
+                  </td>
+                  <td><div class="category-summary-name"><strong>${escapeHtml(row.group)}</strong><span>${categoryDetails.length} 个品类</span></div></td>
+                  ${groupMetricCells(row, previous)}
+                </tr>
+                ${categoryRowsHtml}
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+      setupGroupRowToggles();
+    }
+    const GROUP_EXPANDED_ROWS_KEY = 'sktGroupExpandedRows';
+    function setupGroupRowToggles() {
+      const content = byId('groupTable');
+      if (!content) return;
+      let expandedRows = new Set();
+      try {
+        const savedRows = JSON.parse(localStorage.getItem(GROUP_EXPANDED_ROWS_KEY) || '[]');
+        if (Array.isArray(savedRows)) expandedRows = new Set(savedRows.map(value => String(value)));
+      } catch (error) {
+        expandedRows = new Set();
+      }
+      const setExpanded = (button, expanded) => {
+        const group = button.dataset.groupRowKey || '';
+        if (!group) return;
+        button.setAttribute('aria-expanded', String(expanded));
+        button.setAttribute('aria-label', `${expanded ? '收起' : '展开'}${group}品类`);
+        button.title = expanded ? '收起品类' : '展开品类';
+        content.querySelectorAll('.group-category-row').forEach(row => {
+          if ((row.dataset.groupCategoryParent || '') === group) row.hidden = !expanded;
+        });
+      };
+      content.querySelectorAll('[data-group-row-key]').forEach(button => {
+        const group = button.dataset.groupRowKey || '';
+        if (!group || button.disabled) return;
+        setExpanded(button, expandedRows.has(group));
+        button.addEventListener('click', () => {
+          const expanded = button.getAttribute('aria-expanded') !== 'true';
+          if (expanded) expandedRows.add(group);
+          else expandedRows.delete(group);
+          setExpanded(button, expanded);
+          try {
+            localStorage.setItem(GROUP_EXPANDED_ROWS_KEY, JSON.stringify([...expandedRows]));
+          } catch (error) {}
+        });
+      });
+    }
     function renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows) {
       const rows = categoryRows.slice(0, 40);
       if (!rows.length) {
@@ -5040,7 +5838,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         return `
           <div class="category-products-detail">
             <div class="category-products-grid category-products-head">
-              <div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>SP销量</div><div>TT销量</div><div>销量增幅</div><div>访问</div><div>加购率</div><div>支付件转化</div><div>站内花费</div><div>站内ROAS</div><div>站外花费RMB</div><div>站外ROAS</div><div>总媒体花费</div><div>综合ROAS</div><div>媒体/销售额</div>
+              <div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>访问</div><div>加购率</div><div>支付件转化</div><div>站内花费</div><div>站内ROAS</div><div>站外花费RMB</div><div>站外ROAS</div><div>总媒体花费</div><div>综合ROAS</div><div>媒体/销售额</div><div>优惠券花费</div><div>优惠券占比</div>
             </div>
             ${categoryProducts.map(product => {
               const previous = compareProductsByKey.get(`${category}||${product.product || '未命名单品'}`) || {};
@@ -5049,9 +5847,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <div class="category-product-name">${escapeHtml(product.product || '未命名单品')}</div>
                   <div>${tableMetricHtml(product.paid_sales_rmb, previous.paid_sales_rmb, money)}</div>
                   <div>${tableMetricHtml(product.gmv_share, previous.gmv_share, ratio, { neutral: true })}</div>
-                  <div>${tableAvailableMetricHtml(product.sp_units, previous.sp_units, value => fmt0.format(n(value)), product.platform_units_available, previous.platform_units_available)}</div>
-                  <div>${tableAvailableMetricHtml(product.tt_units, previous.tt_units, value => fmt0.format(n(value)), product.platform_units_available, previous.platform_units_available)}</div>
-                  <div>${product.platform_units_available ? tableAvailableMetricHtml(product.unit_growth, previous.unit_growth, ratio, true, previous.platform_units_available) : unavailable}</div>
                   <div>${tableMetricHtml(product.visitors, previous.visitors, value => fmt0.format(n(value)))}</div>
                   <div>${tableMetricHtml(product.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</div>
                   <div>${tableMetricHtml(product.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</div>
@@ -5062,6 +5857,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <div>${tableAvailableMetricHtml(product.media_spend_rmb, previous.media_spend_rmb, money, product.media_available, previous.media_available, { neutral: true })}</div>
                   <div>${tableAvailableMetricHtml(product.media_roas, previous.media_roas, roas, product.media_available, previous.media_available)}</div>
                   <div>${tableAvailableMetricHtml(product.media_spend_ratio, previous.media_spend_ratio, ratio, product.media_available, previous.media_available, { inverse: true })}</div>
+                  <div>${tableMetricHtml(product.voucher_spend_rmb, previous.voucher_spend_rmb, money, { neutral: true })}</div>
+                  <div>${tableMetricHtml(product.voucher_ratio, previous.voucher_ratio, ratio, { inverse: true })}</div>
                 </div>
               `;
             }).join('')}
@@ -5072,7 +5869,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <table class="category-detail-table">
           <thead>
             <tr>
-              <th aria-label="展开商品"></th><th>品类</th><th>商品销售额RMB</th><th>销售占比</th><th>SP销量</th><th>TT销量</th><th>销量增幅</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th>
+              <th aria-label="展开商品"></th><th>品类</th><th>商品销售额RMB</th><th>销售占比</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th><th>优惠券花费</th><th>优惠券占比</th>
             </tr>
           </thead>
           <tbody>
@@ -5090,9 +5887,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td><div class="category-summary-name"><strong>${escapeHtml(row.category)}</strong><span>${categoryProducts.length} 个商品</span></div></td>
                   <td>${tableMetricHtml(row.product_paid_sales_rmb, previous.product_paid_sales_rmb, money)}</td>
                   <td>${tableMetricHtml(row.sales_share, previous.sales_share, ratio, { neutral: true })}</td>
-                  <td>${tableMetricHtml(row.sp_units, previous.sp_units, value => fmt0.format(n(value)))}</td>
-                  <td>${tableMetricHtml(row.tt_units, previous.tt_units, value => fmt0.format(n(value)))}</td>
-                  <td>${tableMetricHtml(row.unit_growth, previous.unit_growth, ratio)}</td>
                   <td>${tableMetricHtml(row.product_visitors, previous.product_visitors, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</td>
                   <td>${tableMetricHtml(row.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</td>
@@ -5103,9 +5897,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td>${tableMetricHtml(row.media_spend_rmb, previous.media_spend_rmb, money, { neutral: true })}</td>
                   <td>${tableMetricHtml(row.media_roas, previous.media_roas, roas)}</td>
                   <td>${tableMetricHtml(row.media_spend_ratio, previous.media_spend_ratio, ratio, { inverse: true })}</td>
+                  <td>${tableMetricHtml(row.voucher_spend_rmb, previous.voucher_spend_rmb, money, { neutral: true })}</td>
+                  <td>${tableMetricHtml(row.voucher_ratio, previous.voucher_ratio, ratio, { inverse: true })}</td>
                 </tr>
                 <tr class="category-products-row" id="${detailId}" data-category-products-key="${escapeHtml(row.category)}" hidden>
-                  <td colspan="17">${categoryProducts.length ? productDetailHtml(row.category, categoryProducts) : ''}</td>
+                  <td colspan="16">${categoryProducts.length ? productDetailHtml(row.category, categoryProducts) : ''}</td>
                 </tr>
               `;
             }).join('')}
@@ -5167,7 +5963,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </tr>
             ${advertisedRows.length ? renderRows(advertisedRows, 'advertised') : ''}
             ${unmatchedRows.length ? `<tr class="offsite-product-group-row unmatched"><td colspan="14"><strong>待补产品映射</strong><span>站外源表产品为空或未命中 T 列，花费已保留</span></td></tr>${renderRows(unmatchedRows, 'unmatched')}` : ''}
-            ${unadvertisedRows.length ? `<tr class="offsite-product-group-row unadvertised"><td colspan="14"><strong>未投放产品</strong><span>站内有经营数据但未命中品类表 T 列 · ${unadvertisedRows.length} 个</span></td></tr>${renderRows(unadvertisedRows, 'unadvertised')}` : ''}
+            ${unadvertisedRows.length ? `<tr class="offsite-product-group-row unadvertised"><td colspan="14"><strong>未投放产品</strong><span>站内有数据但未命中品类表 T 列 · ${unadvertisedRows.length} 个</span></td></tr>${renderRows(unadvertisedRows, 'unadvertised')}` : ''}
           </tbody>
         </table>
       `;
@@ -5264,7 +6060,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th>商品</th><th>品类</th><th>商品销售额RMB</th><th>GMV占比</th><th>销量</th><th>访问</th><th>页面浏览</th><th>加购访客</th><th>加购率</th><th>支付件转化</th><th>商品点击率</th><th>客访价值</th>
+              <th>商品</th><th>品类</th><th>商品销售额RMB</th><th>GMV占比</th><th>销量</th><th>访问</th><th>页面浏览</th><th>加购访客</th><th>加购率</th><th>支付件转化</th><th>商品点击率</th><th>客访价值</th><th>优惠券花费</th><th>优惠券占比</th>
             </tr>
           </thead>
           <tbody>
@@ -5284,6 +6080,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td>${tableMetricHtml(row.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</td>
                   <td>${tableMetricHtml(row.ctr, previous.ctr, ratio)}</td>
                   <td>${tableMetricHtml(row.sales_per_visitor, previous.sales_per_visitor, money)}</td>
+                  <td>${tableMetricHtml(row.voucher_spend_rmb, previous.voucher_spend_rmb, money, { neutral: true })}</td>
+                  <td>${tableMetricHtml(row.voucher_ratio, previous.voucher_ratio, ratio, { inverse: true })}</td>
                 </tr>
               `;
             }).join('')}
@@ -5412,6 +6210,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const compare = previousRows(period);
       const categoryRows = selectedCategoryRows(period);
       const compareCategoryRows = selectedCategoryRows(period, 'compare');
+      const groupRows = aggregateGroupRows(selectedCategoryDailyRows(period));
+      const compareGroupRows = aggregateGroupRows(selectedCategoryDailyRows(period, 'compare'));
       const offsiteProductRows = selectedOffsiteProductRows(period);
       const compareOffsiteProductRows = selectedOffsiteProductRows(period, 'compare');
       const baseProductRows = selectedProductRows(period);
@@ -5443,6 +6243,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       renderProductMediaChart(productRows);
       renderProductTrafficChart(productRows);
       renderInsights(rows, compare, categoryRows, offsiteProductRows, period);
+      renderGroupTable(groupRows, compareGroupRows, categoryRows, compareCategoryRows);
       renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows);
       renderProductTable(productRows, compareProductRows);
       renderOffsiteProductTable(offsiteProductView.current, offsiteProductView.compare);
@@ -5512,8 +6313,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       if (!toggle || !content) return;
       const setCollapsed = collapsed => {
         toggle.setAttribute('aria-expanded', String(!collapsed));
-        toggle.setAttribute('aria-label', collapsed ? '展开品类经营明细' : '收起品类经营明细');
-        toggle.title = collapsed ? '展开品类经营明细' : '收起品类经营明细';
+        toggle.setAttribute('aria-label', collapsed ? '展开品类明细' : '收起品类明细');
+        toggle.title = collapsed ? '展开品类明细' : '收起品类明细';
         content.hidden = collapsed;
       };
       let saved = false;
@@ -5864,18 +6665,31 @@ def validate_report_html(html: str) -> None:
         "CATEGORY_EXPANDED_ROWS_KEY",
         "function setupCategoryRowToggles",
         "renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows)",
+        'id="groupTable"',
+        "function aggregateGroupRows",
+        "优惠券花费",
+        "优惠券占比",
+        "voucher_audit",
         "function coreDataCompleteDate",
-        "核心源表完整至",
-        "Q列“拉新/再营销”",
-        "GMV(After Seller Discounts)（I列）",
-        '<a href="skt-material-analysis.html">素材分析</a>',
+         "核心源表完整至",
+         "Q列“拉新/再营销”",
+         "salesPriceSumRmb",
+         '"commerce_source":"DMS"',
+         f'"report_contract_version":"{REPORT_CONTRACT_VERSION}"',
+         "按字段名读取 Sales (Placed Order) (SGD)",
+         '<a href="skt-material-analysis.html">素材分析</a>',
     )
     forbidden_fragments = (
         "<th>Purchase Value RMB</th>",
         "<th>平均汇率</th>",
         "<th>归因品类</th><th>SP商品GMV</th>",
         "function lookupSpProductGmv",
-        '"metric": "GMV(Customer Payment)"',
+         '"metric": "GMV(Customer Payment)"',
+         "L 列 Sales (Placed Order) (SGD)",
+         "L列 Sales (Placed Order) (SGD)",
+         "经营",
+         "<th>销售占比</th><th>SP销量</th>",
+         "<div>销售占比</div><div>SP销量</div>",
     )
     missing = [fragment for fragment in required_fragments if fragment not in html]
     stale = [fragment for fragment in forbidden_fragments if fragment in html]
@@ -5899,6 +6713,10 @@ def run() -> Path:
     site_path.write_text(html, encoding="utf-8")
     index_path.write_text(html, encoding="utf-8")
     public_index_path.write_text(html, encoding="utf-8")
+    if DMS_COMMERCE_CACHE_PATH.is_file():
+        public_dms_cache_path = SITE_DIR / "data" / "dms" / DMS_COMMERCE_CACHE_PATH.name
+        public_dms_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(DMS_COMMERCE_CACHE_PATH, public_dms_cache_path)
     nojekyll_path.touch()
     return output_path
 

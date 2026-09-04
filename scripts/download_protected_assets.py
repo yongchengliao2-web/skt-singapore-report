@@ -17,6 +17,8 @@ USER_AGENT = "skt-report-asset-preserver/1.1"
 MAIN_REPORT_REQUIRED_MARKERS = (
     b'id="offsiteProductToggle"',
     b"data-offsite-product-row-key",
+    b'id="groupTable"',
+    b"data-group-row-key",
     b'id="categorySectionToggle"',
     b"data-category-row-key",
 )

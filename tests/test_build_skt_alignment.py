@@ -9,6 +9,8 @@ from pipelines.build_skt_alignment import (
     canonical_offsite_product_name,
     infer_offsite_advertised_product,
     load_category_reference,
+    load_dms_commerce,
+    load_new_mapping,
     load_offsite,
     load_onsite_ads,
     load_onsite_products,
@@ -16,6 +18,7 @@ from pipelines.build_skt_alignment import (
     match_platform_unit_products,
     normalize_audience_type,
     normalize_text,
+    finalize_daily_rows,
     validate_downloaded_sheet,
 )
 
@@ -155,6 +158,46 @@ class LoadSpGmvTests(unittest.TestCase):
         self.assertAlmostEqual(daily["2026-07-22"]["sp_gmv_rmb"], 535.0)
 
 
+class LoadDmsCommerceTests(unittest.TestCase):
+    def test_uses_dms_rmb_gmv_and_daily_sku_units(self) -> None:
+        import json
+
+        cache = {
+            "brand": "SKT",
+            "currency": "RMB",
+            "gmv": [
+                {"date": "2026-08-01", "platform": "Shopee", "gmv_rmb": 1200, "orders": 12},
+                {"date": "2026-08-01", "platform": "TikTok", "gmv_rmb": 800, "orders": 8},
+                {"date": "2026-07-01", "platform": "Shopee", "gmv_rmb": 900, "orders": 9},
+            ],
+            "units": [
+                {"date": "2026-08-01", "platform": "Shopee", "sku": "SKU-1", "product": "5X面霜", "units": 5},
+                {"date": "2026-07-01", "platform": "Shopee", "sku": "SKU-1", "product": "5X面霜", "units": 3},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "skt_dms_commerce_latest.json"
+            source.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+            daily = {}
+            category_daily = {}
+            store_rows, unit_rows = load_dms_commerce(
+                source,
+                daily,
+                {"sku_to_category": {"sku1": "面霜"}, "sku_to_onsite_product": {}},
+                category_daily,
+            )
+
+        self.assertEqual(store_rows["DMS / Shopee"]["gmv_rmb"], 2100)
+        self.assertEqual(daily["2026-08-01"]["sp_gmv_rmb"], 1200)
+        self.assertEqual(daily["2026-08-01"]["tt_gmv_rmb"], 800)
+        finalized = {row["date"]: row for row in finalize_daily_rows(daily)}
+        self.assertEqual(finalized["2026-08-01"]["platform_units"], 5)
+        self.assertEqual(len(unit_rows), 2)
+        current_units = next(row for row in unit_rows if row["date"] == "2026-08-01")
+        self.assertEqual(current_units["category"], "面霜")
+        self.assertEqual(current_units["prior_units"], 3)
+
+
 class LoadOnsiteProductTests(unittest.TestCase):
     def test_deduplicates_source_sales_before_product_gmv_conversion(self) -> None:
         headers = [
@@ -219,6 +262,65 @@ class LoadOnsiteProductTests(unittest.TestCase):
         self.assertAlmostEqual(product_daily_rows[0]["paid_sales_rmb"], 267.5)
         self.assertAlmostEqual(product_rows[0]["product_impressions"], 1000.0)
         self.assertAlmostEqual(product_rows[0]["product_clicks"], 100.0)
+
+    def test_merges_item_variation_rows_before_coupon_enrichment(self) -> None:
+        headers = [
+            "日期date",
+            "Item ID",
+            "SKU",
+            "Product",
+            "链接",
+            "品类",
+            "Sales (Placed Order) (SGD)",
+            "Units (Paid Order)",
+            "Product Visitors (Visit)",
+            "Product Page Views",
+            "Product Visitors (Add to Cart)",
+            "汇率",
+        ]
+        values = [
+            ["8月1日", "123456789", "-", "5X面霜", "5X面霜", "面霜", "100", "2", "20", "30", "4", "5.35"],
+            ["8月1日", "123456789", "variation-1", "5X面霜", "5X面霜", "未归类", "100", "2", "20", "30", "4", "5.35"],
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "onsite_products.csv"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(headers)
+                writer.writerows(values)
+
+            category_rows, product_rows, product_daily_rows = load_onsite_products(
+                source,
+                {},
+                fx_rate=5.35,
+                category_ref={},
+                category_daily={},
+            )
+
+        self.assertEqual(len(product_rows), 1)
+        self.assertEqual(len(product_daily_rows), 1)
+        self.assertEqual(product_rows[0]["category"], "面霜")
+        self.assertAlmostEqual(product_rows[0]["paid_sales_sgd"], 100.0)
+        self.assertEqual(category_rows[0]["category"], "面霜")
+
+
+class NewMappingTests(unittest.TestCase):
+    def test_reads_duplicate_category_headers_and_fills_down_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "new_mapping.csv"
+            with source.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["分组", "品类", "", "Item ID", "产品", "品类"])
+                writer.writerow(["护肤", "面霜", "", "123456789", "5X面霜", "面霜"])
+                writer.writerow(["", "", "", "987654321", "5X精华", "精华"])
+
+            mapping = load_new_mapping(source)
+
+        self.assertEqual(mapping["group_order"], ["护肤"])
+        self.assertEqual(mapping["item_by_id"]["123456789"]["category"], "面霜")
+        self.assertEqual(mapping["item_by_id"]["987654321"]["group"], "护肤")
+        self.assertEqual(mapping["category_group_map_normalized"]["面霜"], "护肤")
 
 
 class LoadOnsiteAdProductTests(unittest.TestCase):

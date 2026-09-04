@@ -112,6 +112,48 @@ function Test-LivePage {
   throw "Cloudflare password gate verification failed: expected HTTP 401, received HTTP $code"
 }
 
+function Test-MainReportStructure {
+  param([string]$Path)
+
+  $content = [System.IO.File]::ReadAllText($Path)
+  $requiredMarkers = @(
+    'const DATA =',
+    '"report_contract_version":"skt-main-report-dms-v2"',
+    'id="offsiteProductToggle"',
+    'data-offsite-product-row-key',
+    'id="groupTable"',
+    'data-group-row-key',
+    'id="categorySectionToggle"',
+    'data-category-row-key'
+  )
+  $missingMarkers = @($requiredMarkers | Where-Object { $content.IndexOf($_, [StringComparison]::Ordinal) -lt 0 })
+  if ($missingMarkers.Count -gt 0) {
+    throw "Refusing to publish a regressed main report. Missing markers: $($missingMarkers -join ', ')"
+  }
+  $forbiddenMarkers = @(
+    '经营',
+    '经营总览',
+    'L 列 Sales (Placed Order) (SGD)',
+    '<th>销售占比</th><th>SP销量</th>',
+    '<div>销售占比</div><div>SP销量</div>'
+  )
+  $staleMarkers = @($forbiddenMarkers | Where-Object { $content.IndexOf($_, [StringComparison]::Ordinal) -ge 0 })
+  if ($staleMarkers.Count -gt 0) {
+    throw "Refusing to publish a stale main report. Forbidden markers: $($staleMarkers -join ', ')"
+  }
+}
+
+function Test-MaterialReportStructure {
+  param([string]$Path)
+
+  $content = [System.IO.File]::ReadAllText($Path)
+  $forbiddenMarkers = @('经营', '经营总览')
+  $staleMarkers = @($forbiddenMarkers | Where-Object { $content.IndexOf($_, [StringComparison]::Ordinal) -ge 0 })
+  if ($staleMarkers.Count -gt 0) {
+    throw "Refusing to publish a stale material report. Forbidden markers: $($staleMarkers -join ', ')"
+  }
+}
+
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Write-Step "START SKT Cloudflare Pages publish"
 Write-Step "PROJECT $ProjectName"
@@ -135,10 +177,12 @@ $IndexPath = Join-Path $ProjectRoot "index.html"
 if (!(Test-Path $IndexPath)) {
   throw "Expected public index was not generated: $IndexPath"
 }
+Test-MainReportStructure -Path $IndexPath
 $SiteDir = Join-Path $ProjectRoot "site"
 if (!(Test-Path $SiteDir)) {
   throw "Expected site directory was not generated: $SiteDir"
 }
+Test-MaterialReportStructure -Path (Join-Path $SiteDir "skt-material-analysis.html")
 if (!(Test-Path $PasswordWorkerPath)) {
   throw "Refusing to publish without the password gate: $PasswordWorkerPath"
 }

@@ -27,6 +27,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       SKT_REPORT_SESSION_TOKEN: ${{ secrets.REPORT_SESSION_TOKEN }}
+      SKT_DMS_TOKEN: ${{ secrets.SKT_DMS_TOKEN }}
       PROJECT_NAME: skt-singapore-report
       LIVE_URL: https://skt-singapore-report.pages.dev/
 
@@ -49,6 +50,32 @@ jobs:
           --workers 12
           --minimum-success-rate 0.8
 
+      - name: Preserve prior DMS commerce cache
+        continue-on-error: true
+        run: >-
+          python scripts/download_protected_assets.py
+          --base-url "$LIVE_URL"
+          --asset "/data/dms/skt_dms_commerce_latest.json=.preserved/data/dms/skt_dms_commerce_latest.json"
+
+      - name: Refresh SKT DMS commerce cache
+        continue-on-error: true
+        run: >-
+          python pipelines/fetch_skt_dms_commerce.py
+          --start 2026-01-01
+          --end "$(TZ=Asia/Shanghai date -d 'yesterday' +%F)"
+
+      - name: Restore prior DMS commerce cache when needed
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -s data/dms/skt_dms_commerce_latest.json ] && [ -s .preserved/data/dms/skt_dms_commerce_latest.json ]; then
+            mkdir -p data/dms
+            cp .preserved/data/dms/skt_dms_commerce_latest.json data/dms/skt_dms_commerce_latest.json
+          fi
+
+      - name: Refresh SKT voucher cache
+        run: python tools/fetch_skt_voucher_cost.py --require-live
+
       - name: Build main report from Google Sheet
         run: python pipelines/build_skt_alignment.py
 
@@ -64,16 +91,29 @@ jobs:
           cp .preserved/skt-material-analysis.html site/skt-material-analysis.html
           mkdir -p site/assets
           cp -a .preserved/assets/. site/assets/
+          if [ -s data/dms/skt_dms_commerce_latest.json ]; then
+            mkdir -p site/data/dms
+            cp data/dms/skt_dms_commerce_latest.json site/data/dms/skt_dms_commerce_latest.json
+          fi
           test -s site/index.html
           test -s site/skt-onsite-offsite-alignment.html
           test -s site/skt-material-analysis.html
           test "$(find site/assets/material_snapshots -type f -name '*.jpg' | wc -l)" -gt 0
           grep -q 'id="refreshReport"' site/index.html
+          grep -q '"report_contract_version":"skt-main-report-dms-v2"' site/index.html
+          ! grep -q '经营' site/index.html
+          ! grep -q '经营' site/skt-material-analysis.html
+          ! grep -q 'L 列 Sales (Placed Order) (SGD)' site/index.html
           grep -q 'id="offsiteProductToggle"' site/index.html
           grep -q 'data-offsite-product-row-key' site/index.html
           grep -q 'id="categorySectionToggle"' site/index.html
           grep -q 'class="category-detail-table"' site/index.html
           grep -q 'data-category-row-key' site/index.html
+          grep -q 'id="groupTable"' site/index.html
+          grep -q 'data-group-row-key' site/index.html
+          grep -q '优惠券花费' site/index.html
+          grep -q '优惠券占比' site/index.html
+          grep -q 'voucher_audit' site/index.html
           grep -q 'PAGE_DATA' site/skt-material-analysis.html
           grep -q '"snapshot_url":"/assets/material_snapshots/' site/skt-material-analysis.html
 

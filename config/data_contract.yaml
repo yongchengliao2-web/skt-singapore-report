@@ -8,25 +8,33 @@ brand:
 
 source_tabs:
   sp_platform_gmv:
+    primary_source: DMS
     sheet: SP店铺实收GMV
-    date_field: 日期date
-    order_count_field: Order Count
-    status_field: Order Status
-    store_field: 店铺
-    gmv_local_field: GMV(After Seller Discounts)
-    source_column: I
+    date_field: DMS daily date
+    order_count_field: orderCountSum
+    gmv_rmb_field: salesPriceSumRmb
+    fallback_date_field: 日期date
+    fallback_order_count_field: Order Count
+    fallback_status_field: Order Status
+    fallback_store_field: 店铺
+    fallback_gmv_local_field: GMV(After Seller Discounts)
+    fallback_source_column: I
     normalized_field: sp_gmv_rmb
-    rule: Convert GMV(After Seller Discounts) from SGD to RMB with the exchange rate in 品类表. Do not use GMV(Customer Payment).
+    rule: Prefer DMS salesPriceSumRmb, which is already RMB. Use the Google Sheet column I fallback only when the DMS commerce cache is unavailable, converting with the exchange rate in 品类表. Do not use GMV(Customer Payment).
 
   tt_platform_gmv:
+    primary_source: DMS
     sheet: TT-销售GMV
-    date_field: Order Date
-    order_count_field: Order Count
-    gmv_local_field: GMV(After seller discounts)
-    gmv_rmb_field: GMV(After seller discounts) RMB
+    date_field: DMS daily date
+    order_count_field: orderCountSum
+    gmv_local_field: salesPriceSum
+    gmv_rmb_field: salesPriceSumRmb
+    fallback_date_field: Order Date
+    fallback_order_count_field: Order Count
+    fallback_gmv_rmb_field: GMV(After seller discounts) RMB
     platform_discount_rmb_field: Platform discount RMB
     normalized_field: tt_gmv_rmb
-    rule: Use the RMB GMV field directly.
+    rule: Prefer DMS salesPriceSumRmb, which is already RMB. Use the Google Sheet RMB field only when the DMS commerce cache is unavailable.
 
   offsite_media:
     sheet: 站外数据源
@@ -89,7 +97,7 @@ source_tabs:
     add_to_cart_visitor_field: Product Visitors (Add to Cart)
     product_click_field: Product Clicks
     product_impression_field: Product Impression
-    rule: Use the named Sales (Placed Order) (SGD) field as onsite product GMV and multiply by the row-level 汇率 field to calculate RMB GMV; keep traffic, add-to-cart and units as native counts. Use the named Product Clicks and Product Impression fields, so CTR = Product Clicks / Product Impression. Ignore newly inserted 二级品类 and 三级品类 fields until the category logic is explicitly changed.
+    rule: Read the named Sales (Placed Order) (SGD) field by header name, never by physical column position, then multiply by the row-level 汇率 field to calculate RMB GMV; keep traffic, add-to-cart and units as native counts. Read Product Clicks and Product Impression by header name, so CTR = Product Clicks / Product Impression. Ignore newly inserted 二级品类 and 三级品类 fields until the category logic is explicitly changed.
 
   category_reference:
     sheet: 品类表
@@ -108,22 +116,52 @@ source_tabs:
     offsite_onsite_product_override_field: U
     rule: Use 品类表 as the source of truth for SKU/Item/category mapping, SP SGD-to-RMB exchange rate, and the offsite advertised-product catalog in column T. Column R may explicitly map the row SKU to an onsite product name or Item ID; column U may explicitly map the row T offsite product to an onsite product name or Item ID. Match each column-T product to at most one onsite product; onsite products with data that remain unmatched are marked 未投放产品.
     mapping_priority:
-      - Exact Item ID match.
+      - Exact Item ID match from 新映射.
+      - Exact Item ID match from 品类表.
       - Exact SKU match.
       - Exact item/product name match.
       - Contains/name keyword fallback from 品类表 labels.
-      - Unmapped onsite ads fall back to 泛店铺/无产品; other rows fall back to 未归类.
+      - Unmapped onsite ads fall back to 泛店铺/无产品; other rows fall back to 长尾品.
+
+  new_mapping:
+    sheet: 新映射
+    gid: 1410457373
+    group_field: 分组
+    group_category_field: 品类 (first occurrence)
+    item_id_field: Item ID
+    product_field: 产品
+    item_category_field: 品类 (second occurrence)
+    rule: Use the named fields rather than fixed column positions. Fill down blank 分组 and group-level 品类 cells. New mapping takes priority for Item ID, product, category, and group relationships; use 品类表 only for Item IDs absent from 新映射.
+
+  onsite_voucher_cost:
+    source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_cost_by_item
+    brand_code: SKT
+    date_field: period_start
+    item_id_field: item_id
+    seller_voucher_cost_field: seller_voucher_cost_sgd
+    shopee_voucher_cost_field: shopee_voucher_cost_sgd
+    metric_field: net_voucher_cost_sgd
+    cache: cache/skt_voucher_item_daily.json
+    currency: SGD
+    display_currency: RMB
+    exchange_rate: 5.23
+    rule: Keep the latest row per business_key, aggregate net_voucher_cost_sgd by period_start and Item ID, then convert SGD to RMB with 5.23. Net voucher cost is seller voucher cost minus Shopee voucher cost. Aggregate to product, category, group, and daily levels; voucher ratio is voucher spend RMB divided by onsite product GMV RMB.
 
   platform_unit_supplements:
+    primary_source: DMS
     sp_sheet: SP-销量
     tt_sheet: TT-销量
-    date_field: 日期
-    sku_field: SKU编码
-    product_field: 产品
-    category_field: 品类
-    units_field: 销量
-    prior_units_field: 上月同期销售
-    rule: Use as product/category unit supplement only; do not use these sheets as platform GMV. Map product units to onsite products by category and name, with 品类表 column R as the explicit override.
+    date_field: recordDate
+    sku_field: sku
+    product_field: skuName
+    units_field: dailyDatas.count
+    fallback_date_field: 日期
+    fallback_sku_field: SKU编码
+    fallback_product_field: 产品
+    fallback_category_field: 品类
+    fallback_units_field: 销量
+    fallback_prior_units_field: 上月同期销售
+    rule: Prefer DMS daily SKU units and convert them to long rows. Resolve category by 新映射 then 品类表, and calculate prior-month same-day units from DMS dates. Fall back to the Google Sheet unit tabs only when the DMS commerce cache is unavailable.
 
 derived_metrics:
   - platform_gmv_rmb = sp_gmv_rmb + tt_gmv_rmb
@@ -142,3 +180,5 @@ derived_metrics:
   - add_to_cart_rate = product_add_to_cart_visitors / product_visitors
   - unit_conversion_rate = product_paid_units / product_visitors
   - sales_per_visitor = product_paid_sales_rmb / product_visitors
+  - voucher_spend_rmb = voucher_spend_sgd * 5.23
+  - voucher_ratio = voucher_spend_rmb / product_paid_sales_rmb

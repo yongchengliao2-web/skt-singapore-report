@@ -143,7 +143,7 @@ function loginPage(invalid = false, status = 401) {
 </head>
 <body>
   <main>
-    <div class="brand"><span class="mark">SKT</span><span>新加坡经营报告</span></div>
+    <div class="brand"><span class="mark">SKT</span><span>新加坡报告</span></div>
     <h1>访问验证</h1>
     <p class="note">请输入报告访问密码。</p>
     <form method="post" action="${AUTH_PATH}">
