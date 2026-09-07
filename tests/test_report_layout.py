@@ -92,18 +92,19 @@ class ReportLayoutTests(unittest.TestCase):
         self.assertIn("row = dict(zip(headers, values))", onsite_loader)
         self.assertNotIn("values[", onsite_loader)
 
-    def test_summary_units_use_bq_platform_unit_totals(self) -> None:
-        self.assertIn("platform_units: sum(rows, 'platform_units')", MAIN_REPORT_TEMPLATE)
-        self.assertIn("value: fmt0.format(t.platform_units)", MAIN_REPORT_TEMPLATE)
-        self.assertIn("current: t.platform_units", MAIN_REPORT_TEMPLATE)
+    def test_summary_units_card_uses_bq_sp_totals(self) -> None:
+        self.assertIn("sp_units: sum(rows, 'sp_units')", MAIN_REPORT_TEMPLATE)
+        self.assertIn("sp_orders: sum(rows, 'sp_orders')", MAIN_REPORT_TEMPLATE)
+        self.assertIn("label: '站内销量（SP）'", MAIN_REPORT_TEMPLATE)
+        self.assertIn("value: fmt0.format(t.sp_units)", MAIN_REPORT_TEMPLATE)
+        self.assertIn("current: t.sp_units", MAIN_REPORT_TEMPLATE)
+        self.assertIn("previous: p.sp_units", MAIN_REPORT_TEMPLATE)
         self.assertIn(
-            "total.product_aov = total.platform_units ? total.platform_gmv_rmb / total.platform_units : null",
+            "total.sp_aov = total.sp_units ? total.sp_gmv_rmb / total.sp_units : null",
             MAIN_REPORT_TEMPLATE,
         )
-        self.assertNotIn(
-            "total.product_aov = total.product_paid_units ? total.product_paid_sales_rmb / total.product_paid_units : null",
-            MAIN_REPORT_TEMPLATE,
-        )
+        self.assertIn("['SP AOV', t.sp_aov, p.sp_aov, compactMoney]", MAIN_REPORT_TEMPLATE)
+        self.assertIn("['SP订单', t.sp_orders, p.sp_orders", MAIN_REPORT_TEMPLATE)
 
 
 if __name__ == "__main__":

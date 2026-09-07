@@ -107,6 +107,8 @@ jobs:
           grep -q '"report_contract_version":"skt-main-report-bq-v1"' site/index.html
           grep -q '"commerce_source":"BigQuery sg_dms_gmv_sales_daily"' site/index.html
           grep -q '"platform_daily_audit"' site/index.html
+          grep -q "label: '站内销量（SP）'" site/index.html
+          grep -q "value: fmt0.format(t.sp_units)" site/index.html
           ! grep -q '经营' site/index.html
           ! grep -q '经营' site/skt-material-analysis.html
           ! grep -q 'L 列 Sales (Placed Order) (SGD)' site/index.html

@@ -4606,10 +4606,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const total = {
         platform_gmv_rmb: sum(rows, 'platform_gmv_rmb'),
         sp_gmv_rmb: sum(rows, 'sp_gmv_rmb'),
-         tt_gmv_rmb: sum(rows, 'tt_gmv_rmb'),
-         platform_orders: sum(rows, 'platform_orders'),
-         platform_units: sum(rows, 'platform_units'),
-         offsite_spend: sum(rows, 'offsite_spend'),
+        tt_gmv_rmb: sum(rows, 'tt_gmv_rmb'),
+        sp_orders: sum(rows, 'sp_orders'),
+        platform_orders: sum(rows, 'platform_orders'),
+        sp_units: sum(rows, 'sp_units'),
+        platform_units: sum(rows, 'platform_units'),
+        offsite_spend: sum(rows, 'offsite_spend'),
         offsite_purchase_value: sum(rows, 'offsite_purchase_value'),
         offsite_spend_rmb: sum(rows, 'offsite_spend_rmb'),
         offsite_purchase_value_rmb: sum(rows, 'offsite_purchase_value_rmb'),
@@ -4636,6 +4638,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       total.add_to_cart_rate = total.product_visitors ? total.product_add_to_cart_visitors / total.product_visitors : null;
       total.unit_conversion_rate = total.product_visitors ? total.product_paid_units / total.product_visitors : null;
       total.product_ctr = total.product_impressions ? total.product_clicks / total.product_impressions : null;
+      total.sp_aov = total.sp_units ? total.sp_gmv_rmb / total.sp_units : null;
       total.product_aov = total.platform_units ? total.platform_gmv_rmb / total.platform_units : null;
       total.onsite_spend_ratio = total.platform_gmv_rmb ? total.onsite_spend_rmb / total.platform_gmv_rmb : null;
       total.offsite_spend_ratio = total.platform_gmv_rmb ? total.offsite_spend_rmb / total.platform_gmv_rmb : null;
@@ -4736,13 +4739,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           ],
         },
         {
-          label: '站内销量',
-          value: fmt0.format(t.platform_units),
-          current: t.platform_units,
-          previous: p.platform_units,
+          label: '站内销量（SP）',
+          value: fmt0.format(t.sp_units),
+          current: t.sp_units,
+          previous: p.sp_units,
           subs: [
-            ['全站AOV', t.product_aov, p.product_aov, compactMoney],
-            ['订单', t.platform_orders, p.platform_orders, value => fmt0.format(n(value))],
+            ['SP AOV', t.sp_aov, p.sp_aov, compactMoney],
+            ['SP订单', t.sp_orders, p.sp_orders, value => fmt0.format(n(value))],
           ],
         },
         {
