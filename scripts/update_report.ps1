@@ -40,6 +40,10 @@ try {
   } catch {
     Write-Warning "DMS commerce refresh failed. Continue with the latest DMS cache or Google Sheet fallback."
   }
+  Write-Host "Refreshing SKT platform GMV, orders, and sales units from BigQuery..."
+  Invoke-CheckedNative -FilePath $Python `
+    -Arguments @("tools\fetch_skt_bq_platform_daily.py", "--require-live") `
+    -FailureMessage "BigQuery platform cache refresh failed"
   Write-Host "Refreshing SKT onsite voucher cache from BigQuery..."
   Invoke-CheckedNative -FilePath $Python `
     -Arguments @("tools\fetch_skt_voucher_cost.py", "--require-live") `

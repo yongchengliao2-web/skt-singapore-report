@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,8 +8,10 @@ from pipelines.build_skt_alignment import (
     HTML_TEMPLATE,
     assign_onsite_products_to_offsite_catalog,
     canonical_offsite_product_name,
+    empty_daily_row,
     infer_offsite_advertised_product,
     load_category_reference,
+    load_bq_platform_daily,
     load_dms_commerce,
     load_new_mapping,
     load_offsite,
@@ -22,6 +25,79 @@ from pipelines.build_skt_alignment import (
     finalize_daily_rows,
     validate_downloaded_sheet,
 )
+
+
+class BigQueryPlatformDailyTests(unittest.TestCase):
+    def write_cache(self, path: Path, rows: list[list[object]], **metadata: object) -> None:
+        dates = sorted({str(row[0]) for row in rows})
+        payload = {
+            "metadata": {
+                "brand": "SKT",
+                "country_code": "SG",
+                "scope": "parent",
+                "source_table": "advance-rush-406115.dim_shopee_ads_performance.sg_dms_gmv_sales_daily",
+                "currency": "RMB",
+                "date_start": dates[0],
+                "date_end": dates[-1],
+                "row_count": len(rows),
+                **metadata,
+            },
+            "columns": ["date", "platform", "gmv_rmb", "order_count", "sales_units"],
+            "rows": rows,
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_overwrites_daily_platform_summary_without_touching_detail_rows(self) -> None:
+        rows = [
+            ["2026-09-01", "Shopee", 124302, 1124, 1956],
+            ["2026-09-01", "TikTok", 69641, 540, 1007],
+        ]
+        daily = {
+            "2026-09-01": {
+                **empty_daily_row("2026-09-01"),
+                "sp_gmv_rmb": 1,
+                "tt_gmv_rmb": 2,
+                "sp_orders": 3,
+                "tt_orders": 4,
+                "sp_units": 5,
+                "tt_units": 6,
+                "product_paid_units": 99,
+            }
+        }
+        product_rows = [{"product": "5X面霜", "sp_units": 5, "tt_units": 6}]
+        category_rows = [{"category": "面霜", "sp_units": 5, "tt_units": 6}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "platform.json"
+            self.write_cache(path, rows)
+            audit = load_bq_platform_daily(path, daily)
+
+        finalized = finalize_daily_rows(daily)[0]
+        self.assertEqual(finalized["platform_units"], 2963)
+        self.assertEqual(finalized["platform_orders"], 1664)
+        self.assertEqual(finalized["platform_gmv_rmb"], 193943)
+        self.assertEqual(finalized["product_paid_units"], 99)
+        self.assertEqual(product_rows[0]["sp_units"] + product_rows[0]["tt_units"], 11)
+        self.assertEqual(category_rows[0]["sp_units"] + category_rows[0]["tt_units"], 11)
+        self.assertEqual(audit["source"], "BigQuery")
+
+    def test_rejects_incomplete_platform_dates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "platform.json"
+            self.write_cache(path, [["2026-09-01", "Shopee", 124302, 1124, 1956]])
+            with self.assertRaisesRegex(ValueError, "缺少 SP 或 TT"):
+                load_bq_platform_daily(path, {})
+
+    def test_rejects_a_cache_from_an_unapproved_source(self) -> None:
+        rows = [
+            ["2026-09-01", "Shopee", 124302, 1124, 1956],
+            ["2026-09-01", "TikTok", 69641, 540, 1007],
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "platform.json"
+            self.write_cache(path, rows, source_table="other.table")
+            with self.assertRaisesRegex(ValueError, "不在 SKT 白名单"):
+                load_bq_platform_daily(path, {})
 
 
 class DownloadedSheetValidationTests(unittest.TestCase):

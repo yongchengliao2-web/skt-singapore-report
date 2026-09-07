@@ -5,6 +5,7 @@ import csv
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -25,14 +26,19 @@ SPREADSHEET_ID = "1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk"
 DEFAULT_FX_RATE = 5.35
 DEFAULT_OFFSITE_FX_RATE = 6.9
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
-REPORT_CONTRACT_VERSION = "skt-main-report-dms-v2"
+REPORT_CONTRACT_VERSION = "skt-main-report-bq-v1"
 ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR = 2.0
 VOUCHER_SGD_TO_RMB = 5.23
 VOUCHER_CACHE_PATH = CACHE_DIR / "skt_voucher_item_daily.json"
+BQ_PLATFORM_CACHE_PATH = CACHE_DIR / "skt_bq_platform_daily.json"
 DMS_COMMERCE_CACHE_PATH = ROOT / "data" / "dms" / "skt_dms_commerce_latest.json"
 VOUCHER_SOURCE_TABLE = (
     "advance-rush-406115.dim_shopee_ads_performance."
     "sg_skt_onsite_voucher_cost_by_item"
+)
+BQ_PLATFORM_SOURCE_TABLE = (
+    "advance-rush-406115.dim_shopee_ads_performance."
+    "sg_dms_gmv_sales_daily"
 )
 OFFSITE_PRODUCT_CATALOG_INDEX = 19
 SKU_ONSITE_PRODUCT_OVERRIDE_INDEX = 17
@@ -2216,6 +2222,113 @@ def finalize_daily_rows(daily: dict[str, dict[str, Any]]) -> list[dict[str, Any]
     return rows
 
 
+def load_bq_platform_daily(path: Path, daily: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"BQ平台日缓存不存在：{path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"BQ平台日缓存无法读取：{type(exc).__name__}") from exc
+
+    expected_columns = ["date", "platform", "gmv_rmb", "order_count", "sales_units"]
+    if payload.get("columns") != expected_columns:
+        raise ValueError("BQ平台日缓存字段不符合约定")
+    metadata = payload.get("metadata") or {}
+    expected_metadata = {
+        "brand": "SKT",
+        "country_code": "SG",
+        "scope": "parent",
+        "source_table": BQ_PLATFORM_SOURCE_TABLE,
+        "currency": "RMB",
+    }
+    if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+        raise ValueError("BQ平台日缓存来源不在 SKT 白名单")
+    source_rows = payload.get("rows") or []
+    if not isinstance(source_rows, list) or not source_rows:
+        raise ValueError("BQ平台日缓存为空")
+    if int(metadata.get("row_count") or 0) != len(source_rows):
+        raise ValueError("BQ平台日缓存行数无法对账")
+
+    for target in daily.values():
+        for field in (
+            "sp_gmv_rmb",
+            "sp_orders",
+            "sp_units",
+            "tt_gmv_rmb",
+            "tt_orders",
+            "tt_units",
+        ):
+            target[field] = 0.0
+
+    today = datetime.now(SHANGHAI_TIMEZONE).date().isoformat()
+    seen: set[tuple[str, str]] = set()
+    platforms_by_date: dict[str, set[str]] = {}
+    units_by_date_platform: dict[tuple[str, str], float] = {}
+    totals = {"gmv_rmb": 0.0, "order_count": 0.0, "sales_units": 0.0}
+    for values in source_rows:
+        if not isinstance(values, list) or len(values) != len(expected_columns):
+            raise ValueError("BQ平台日缓存存在异常行")
+        day = parse_date(values[0])
+        platform = clean_text(values[1])
+        if not day or day > today or platform not in {"Shopee", "TikTok"}:
+            raise ValueError("BQ平台日缓存存在无效日期或平台")
+        key = (day, platform)
+        if key in seen:
+            raise ValueError("BQ平台日缓存存在重复的日期 / 平台")
+        seen.add(key)
+        platforms_by_date.setdefault(day, set()).add(platform)
+
+        metrics: dict[str, float] = {}
+        for field, value in zip(expected_columns[2:], values[2:]):
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"BQ平台日缓存存在无效 {field}") from exc
+            if not math.isfinite(number) or number < 0:
+                raise ValueError(f"BQ平台日缓存存在无效 {field}")
+            metrics[field] = number
+            totals[field] += number
+        if not metrics["order_count"].is_integer() or not metrics["sales_units"].is_integer():
+            raise ValueError("BQ平台日缓存订单与销量必须为整数")
+
+        target = add_daily(daily, day)
+        if platform == "Shopee":
+            target["sp_gmv_rmb"] = metrics["gmv_rmb"]
+            target["sp_orders"] = metrics["order_count"]
+            target["sp_units"] = metrics["sales_units"]
+        else:
+            target["tt_gmv_rmb"] = metrics["gmv_rmb"]
+            target["tt_orders"] = metrics["order_count"]
+            target["tt_units"] = metrics["sales_units"]
+        units_by_date_platform[(day, platform)] = metrics["sales_units"]
+
+    incomplete_dates = sorted(
+        day for day, platforms in platforms_by_date.items() if platforms != {"Shopee", "TikTok"}
+    )
+    if incomplete_dates:
+        raise ValueError(f"BQ平台日缓存 {incomplete_dates[-1]} 缺少 SP 或 TT")
+    date_start = min(platforms_by_date)
+    date_end = max(platforms_by_date)
+    if metadata.get("date_start") != date_start or metadata.get("date_end") != date_end:
+        raise ValueError("BQ平台日缓存日期范围无法对账")
+    for day in platforms_by_date:
+        target = daily[day]
+        target["sp_prior_units"] = units_by_date_platform.get((previous_month_day(day), "Shopee"), 0.0)
+        target["tt_prior_units"] = units_by_date_platform.get((previous_month_day(day), "TikTok"), 0.0)
+    return {
+        "source": "BigQuery",
+        "source_table": BQ_PLATFORM_SOURCE_TABLE,
+        "scope": "parent",
+        "date_start": date_start,
+        "date_end": date_end,
+        "row_count": len(source_rows),
+        "day_count": len(platforms_by_date),
+        "gmv_rmb": round(totals["gmv_rmb"], 6),
+        "order_count": int(totals["order_count"]),
+        "sales_units": int(totals["sales_units"]),
+    }
+
+
 def sum_field(rows: list[dict[str, Any]], field: str) -> float:
     return sum(float(row.get(field) or 0.0) for row in rows)
 
@@ -2537,6 +2650,7 @@ def build_payload() -> dict[str, Any]:
     unit_mapping_gaps = attach_platform_units_to_products(unit_rows, product_rows, product_daily_rows)
     offsite_mapping_gaps = build_offsite_product_mapping_gaps(category_ref, product_rows)
     redistribute_catalog_offsite(category_daily, category_ref)
+    bq_platform_audit = load_bq_platform_daily(BQ_PLATFORM_CACHE_PATH, daily)
     daily_rows = finalize_daily_rows(daily)
     category_daily_rows = [add_category_derived(row) for row in sorted(category_daily.values(), key=lambda item: (item["date"], item["category"]))]
     category_rows = summarize_category_daily(category_daily)
@@ -2602,17 +2716,17 @@ def build_payload() -> dict[str, Any]:
         "field_map": [
             {
                 "module": "平台GMV-SP",
-                "sheet": "DMS / SP店铺实收GMV",
-                "date": "DMS日接口",
-                "metric": "salesPriceSumRmb",
-                "normalization": "DMS已返回人民币，直接使用，不再乘汇率",
+                "sheet": "BigQuery sg_dms_gmv_sales_daily",
+                "date": "date",
+                "metric": "gmv_rmb / order_count / sales_units（Shopee）",
+                "normalization": "brand=SKT、country_code=SG、scope=parent；总览直接使用 BQ 人民币 GMV、订单和父商品销量",
             },
             {
                 "module": "平台GMV-TT",
-                "sheet": "DMS / TT-销售GMV",
-                "date": "DMS日接口",
-                "metric": "salesPriceSumRmb",
-                "normalization": "DMS已返回人民币，直接使用",
+                "sheet": "BigQuery sg_dms_gmv_sales_daily",
+                "date": "date",
+                "metric": "gmv_rmb / order_count / sales_units（TikTok）",
+                "normalization": "brand=SKT、country_code=SG、scope=parent；总览直接使用 BQ 人民币 GMV、订单和父商品销量",
             },
             {
                 "module": "站外",
@@ -2657,16 +2771,19 @@ def build_payload() -> dict[str, Any]:
                 "normalization": f"按 Item ID 汇总净优惠券成本（商家承担 - Shopee承担），1 SGD = {VOUCHER_SGD_TO_RMB:g} RMB；优惠券占比 = 优惠券花费RMB / 商品销售额RMB",
             },
             {
-                "module": "品类销量补充",
+                "module": "商品与品类销量补充",
                 "sheet": "DMS / SP-销量 + TT-销量",
                 "date": "recordDate",
                 "metric": "sku / skuName / dailyDatas.count",
-                "normalization": "DMS日SKU销量转成长表；品类按新映射 > 品类表匹配，未命中归入长尾品",
+                "normalization": "仅用于商品与品类明细拆分，不覆盖总览 BQ 销量；DMS日SKU销量按新映射 > 品类表匹配，未命中归入长尾品",
             },
         ],
     }
-    payload["commerce_source"] = "DMS" if dms_commerce_available else "Google Sheet fallback"
+    payload["commerce_source"] = "BigQuery sg_dms_gmv_sales_daily"
+    payload["platform_daily_audit"] = bq_platform_audit
+    payload["detail_unit_source"] = "DMS SKU detail" if dms_commerce_available else "Google Sheet SKU detail fallback"
     voucher_audit = enrich_payload_with_vouchers(payload, category_ref, VOUCHER_CACHE_PATH)
+    payload["summary"].setdefault("freshness", {})["platform_sales_bq"] = bq_platform_audit["date_end"]
     payload["summary"].setdefault("freshness", {})["voucher"] = voucher_audit["date_end"]
     payload["assumptions"] = {
         "category_mapping": "新映射 > 品类表",
@@ -4336,7 +4453,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function coreDataCompleteDate() {
       const freshness = DATA.summary?.freshness || {};
-      const dates = ['sp_gmv', 'tt_gmv', 'offsite', 'onsite_ads', 'onsite_products']
+      const dates = ['sp_gmv', 'tt_gmv', 'platform_sales_bq', 'offsite', 'onsite_ads', 'onsite_products']
         .map(key => freshness[key] || '');
       return dates.every(Boolean) ? dates.sort()[0] : '';
     }
@@ -4519,7 +4636,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       total.add_to_cart_rate = total.product_visitors ? total.product_add_to_cart_visitors / total.product_visitors : null;
       total.unit_conversion_rate = total.product_visitors ? total.product_paid_units / total.product_visitors : null;
       total.product_ctr = total.product_impressions ? total.product_clicks / total.product_impressions : null;
-      total.product_aov = total.product_paid_units ? total.product_paid_sales_rmb / total.product_paid_units : null;
+      total.product_aov = total.platform_units ? total.platform_gmv_rmb / total.platform_units : null;
       total.onsite_spend_ratio = total.platform_gmv_rmb ? total.onsite_spend_rmb / total.platform_gmv_rmb : null;
       total.offsite_spend_ratio = total.platform_gmv_rmb ? total.offsite_spend_rmb / total.platform_gmv_rmb : null;
       return total;
@@ -4624,7 +4741,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           current: t.platform_units,
           previous: p.platform_units,
           subs: [
-            ['AOV', t.product_aov, p.product_aov, compactMoney],
+            ['全站AOV', t.product_aov, p.product_aov, compactMoney],
             ['订单', t.platform_orders, p.platform_orders, value => fmt0.format(n(value))],
           ],
         },
@@ -5634,7 +5751,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         topMediaCategory ? `媒体投入最高品类是 ${topMediaCategory.category}，媒体花费 ${money(topMediaCategory.media_spend_rmb)}，综合 ROAS ${roas(topMediaCategory.media_roas)}，媒体花费/商品销售额 ${ratio(topMediaCategory.media_spend_ratio)}。` : '当前筛选下暂无可归因媒体投入。',
         topOffsite ? `站外花费RMB最高产品是 ${topOffsite.product}，映射品类 ${topOffsite.category || '-'}，花费 ${money(topOffsite.spend_rmb)}，站外GMV ${money(topOffsite.purchase_value_rmb)}。` : '站外产品维度暂未形成有效汇总。',
         `品类表已读取 ${fmt0.format(ref.item_count || 0)} 个 Item ID、${fmt0.format(ref.sku_count || 0)} 个 SKU 与 ${fmt0.format(ref.category_count || 0)} 个品类标签，用于广告、销量与商品的归因兜底。`,
-        `数据新鲜度：SP ${freshness.sp_gmv || '-'}，TT ${freshness.tt_gmv || '-'}，站外 ${freshness.offsite || '-'}，站内广告 ${freshness.onsite_ads || '-'}。`,
+        `数据新鲜度：BQ平台销量 ${freshness.platform_sales_bq || '-'}，SP ${freshness.sp_gmv || '-'}，TT ${freshness.tt_gmv || '-'}，站外 ${freshness.offsite || '-'}，站内广告 ${freshness.onsite_ads || '-'}。`,
       ];
       if (byId('insightList')) {
         byId('insightList').innerHTML = insights.map(text => `<li>${escapeHtml(text)}</li>`).join('');
@@ -6682,8 +6799,9 @@ def validate_report_html(html: str) -> None:
         "function coreDataCompleteDate",
          "核心源表完整至",
          "Q列“拉新/再营销”",
-         "salesPriceSumRmb",
-         '"commerce_source":"DMS"',
+         "gmv_rmb / order_count / sales_units（Shopee）",
+         '"commerce_source":"BigQuery sg_dms_gmv_sales_daily"',
+         '"platform_daily_audit"',
          f'"report_contract_version":"{REPORT_CONTRACT_VERSION}"',
          "按字段名读取 Sales (Placed Order) (SGD)",
          '<a href="skt-material-analysis.html">素材分析</a>',

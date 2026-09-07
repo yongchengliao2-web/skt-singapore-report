@@ -118,7 +118,9 @@ function Test-MainReportStructure {
   $content = [System.IO.File]::ReadAllText($Path)
   $requiredMarkers = @(
     'const DATA =',
-    '"report_contract_version":"skt-main-report-dms-v2"',
+    '"report_contract_version":"skt-main-report-bq-v1"',
+    '"commerce_source":"BigQuery sg_dms_gmv_sales_daily"',
+    '"platform_daily_audit"',
     'id="offsiteProductToggle"',
     'data-offsite-product-row-key',
     'id="groupTable"',

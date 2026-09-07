@@ -60,13 +60,16 @@ powershell -ExecutionPolicy Bypass -File scripts\set_local_report_session.ps1
 
 - The report page `刷新数据` button dispatches `.github/workflows/refresh-main-report.yml`.
 - The same workflow refreshes the main Google Sheet report Monday through Friday at 10:45 Asia/Shanghai.
-- The cloud workflow preserves the current material page and never calls the DMS pipeline.
+- The cloud workflow preserves the current material page and refreshes the BigQuery platform summary before building.
 - The local material automation runs Monday through Friday at 11:40 Asia/Shanghai and preserves the current live main report.
 - Material publishing checks the GitHub main-report workflow before and after deployment; if they overlap, it waits and republishes with the latest main report.
 
 ## Core Field Decision
 
-Platform GMV follows the user's instruction and uses the two platform GMV tabs:
+Summary-level platform GMV, orders, and sales units use the formal BigQuery view
+`advance-rush-406115.dim_shopee_ads_performance.sg_dms_gmv_sales_daily` with
+`country_code=SG`, `brand=SKT`, and `scope=parent`.
 
-- SP: `SP店铺实收GMV`, field `GMV(After Seller Discounts)` (column I), converted to RMB with the `品类表` exchange rate.
-- TT: `TT-销售GMV`, field `GMV(After seller discounts) RMB`.
+Product and category unit drilldowns continue to use DMS SKU detail because the
+BigQuery summary has no SKU dimension. The Google Sheet SP/TT source tabs remain
+source fallbacks for local diagnostics, not the dashboard summary authority.

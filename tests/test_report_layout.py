@@ -92,10 +92,18 @@ class ReportLayoutTests(unittest.TestCase):
         self.assertIn("row = dict(zip(headers, values))", onsite_loader)
         self.assertNotIn("values[", onsite_loader)
 
-    def test_summary_units_use_dms_platform_unit_totals(self) -> None:
+    def test_summary_units_use_bq_platform_unit_totals(self) -> None:
         self.assertIn("platform_units: sum(rows, 'platform_units')", MAIN_REPORT_TEMPLATE)
         self.assertIn("value: fmt0.format(t.platform_units)", MAIN_REPORT_TEMPLATE)
         self.assertIn("current: t.platform_units", MAIN_REPORT_TEMPLATE)
+        self.assertIn(
+            "total.product_aov = total.platform_units ? total.platform_gmv_rmb / total.platform_units : null",
+            MAIN_REPORT_TEMPLATE,
+        )
+        self.assertNotIn(
+            "total.product_aov = total.product_paid_units ? total.product_paid_sales_rmb / total.product_paid_units : null",
+            MAIN_REPORT_TEMPLATE,
+        )
 
 
 if __name__ == "__main__":

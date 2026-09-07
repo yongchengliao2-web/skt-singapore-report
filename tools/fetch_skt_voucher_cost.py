@@ -7,12 +7,14 @@ import argparse
 from datetime import datetime, timezone
 import json
 import math
-import os
 from pathlib import Path
-import shutil
-import subprocess
 import sys
 from typing import Any, Iterable
+
+try:
+    from bigquery_query import query_records
+except ModuleNotFoundError:
+    from tools.bigquery_query import query_records
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,7 @@ PROJECT_ID = "advance-rush-406115"
 DATASET_ID = "dim_shopee_ads_performance"
 TABLE_ID = "sg_skt_onsite_voucher_cost_by_item"
 SOURCE_TABLE = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+LOCATION = "northamerica-northeast1"
 VOUCHER_FX_RATE = 5.23
 COLUMNS = ("date", "product_id", "voucher_spend_sgd")
 
@@ -44,58 +47,6 @@ WHERE net_voucher_cost_sgd IS NOT NULL
 GROUP BY date, product_id
 ORDER BY date, product_id
 """
-
-
-def resolve_bq(explicit_path: str = "") -> str | None:
-    candidates = [
-        explicit_path,
-        os.environ.get("BQ_PATH", ""),
-        shutil.which("bq") or "",
-        shutil.which("bq.cmd") or "",
-        r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin\bq.cmd",
-        r"C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\bq.cmd",
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(candidate)
-        if path.is_file():
-            return str(path)
-        resolved = shutil.which(candidate)
-        if resolved:
-            return resolved
-    return None
-
-
-def run_bq_query(bq_path: str) -> list[dict[str, Any]]:
-    command = [
-        bq_path,
-        "query",
-        "--use_legacy_sql=false",
-        "--format=json",
-        "--max_rows=100000",
-        "--quiet",
-        " ".join(QUERY.split()),
-    ]
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=180,
-    )
-    if completed.returncode != 0:
-        error = (completed.stderr or completed.stdout or "BigQuery query failed").strip()
-        raise RuntimeError(error.splitlines()[-1][:500])
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("BigQuery returned invalid JSON") from exc
-    if not isinstance(payload, list) or not payload:
-        raise RuntimeError("BigQuery voucher query returned no rows")
-    return [dict(row) for row in payload if isinstance(row, dict)]
 
 
 def build_payload(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -181,10 +132,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output = Path(args.output)
     try:
-        bq_path = resolve_bq(args.bq_path)
-        if not bq_path:
-            raise RuntimeError("BigQuery CLI is unavailable")
-        payload = build_payload(run_bq_query(bq_path))
+        records = query_records(
+            QUERY,
+            project_id=PROJECT_ID,
+            location=LOCATION,
+            explicit_bq_path=args.bq_path,
+        )
+        if not records:
+            raise RuntimeError("BigQuery voucher query returned no rows")
+        payload = build_payload(records)
         write_payload(output, payload)
         validate_cache(output)
         print(json.dumps({
@@ -195,7 +151,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             "date_end": payload["metadata"]["date_end"],
         }, ensure_ascii=False))
         return 0
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         if args.require_live or not output.is_file():
             print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False))
             return 1

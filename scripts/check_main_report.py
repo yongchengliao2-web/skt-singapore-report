@@ -13,6 +13,7 @@ DEFAULT_SOURCE_LAG_BUSINESS_DAYS = 2
 REQUIRED_FRESHNESS = (
     "sp_gmv",
     "tt_gmv",
+    "platform_sales_bq",
     "offsite",
     "onsite_ads",
     "onsite_products",

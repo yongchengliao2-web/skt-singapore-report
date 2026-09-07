@@ -8,7 +8,9 @@ brand:
 
 source_tabs:
   sp_platform_gmv:
-    primary_source: DMS
+    primary_source: BigQuery
+    source_table: advance-rush-406115.dim_shopee_ads_performance.sg_dms_gmv_sales_daily
+    source_filters: country_code=SG, brand=SKT, scope=parent, platform=Shopee
     sheet: SP店铺实收GMV
     date_field: DMS daily date
     order_count_field: orderCountSum
@@ -20,10 +22,12 @@ source_tabs:
     fallback_gmv_local_field: GMV(After Seller Discounts)
     fallback_source_column: I
     normalized_field: sp_gmv_rmb
-    rule: Prefer DMS salesPriceSumRmb, which is already RMB. Use the Google Sheet column I fallback only when the DMS commerce cache is unavailable, converting with the exchange rate in 品类表. Do not use GMV(Customer Payment).
+    rule: Use BigQuery gmv_rmb, order_count, and parent-scope sales_units for the platform daily summary. The table is built from DMS and is the formal dashboard source. Do not use GMV(Customer Payment), onsite product GMV, or onsite ad GMV.
 
   tt_platform_gmv:
-    primary_source: DMS
+    primary_source: BigQuery
+    source_table: advance-rush-406115.dim_shopee_ads_performance.sg_dms_gmv_sales_daily
+    source_filters: country_code=SG, brand=SKT, scope=parent, platform=TikTok
     sheet: TT-销售GMV
     date_field: DMS daily date
     order_count_field: orderCountSum
@@ -34,7 +38,7 @@ source_tabs:
     fallback_gmv_rmb_field: GMV(After seller discounts) RMB
     platform_discount_rmb_field: Platform discount RMB
     normalized_field: tt_gmv_rmb
-    rule: Prefer DMS salesPriceSumRmb, which is already RMB. Use the Google Sheet RMB field only when the DMS commerce cache is unavailable.
+    rule: Use BigQuery gmv_rmb, order_count, and parent-scope sales_units for the platform daily summary. The table is built from DMS and is the formal dashboard source.
 
   offsite_media:
     sheet: 站外数据源
@@ -148,7 +152,7 @@ source_tabs:
     rule: Keep the latest row per business_key, aggregate net_voucher_cost_sgd by period_start and Item ID, then convert SGD to RMB with 5.23. Net voucher cost is seller voucher cost minus Shopee voucher cost. Aggregate to product, category, group, and daily levels; voucher ratio is voucher spend RMB divided by onsite product GMV RMB.
 
   platform_unit_supplements:
-    primary_source: DMS
+    primary_source: DMS SKU detail
     sp_sheet: SP-销量
     tt_sheet: TT-销量
     date_field: recordDate
@@ -161,10 +165,11 @@ source_tabs:
     fallback_category_field: 品类
     fallback_units_field: 销量
     fallback_prior_units_field: 上月同期销售
-    rule: Prefer DMS daily SKU units and convert them to long rows. Resolve category by 新映射 then 品类表, and calculate prior-month same-day units from DMS dates. Fall back to the Google Sheet unit tabs only when the DMS commerce cache is unavailable.
+    rule: Use DMS daily SKU units only for product and category detail, never for the platform summary card. Resolve category by 新映射 then 品类表, and calculate prior-month same-day units from DMS dates. Fall back to the Google Sheet unit tabs only when the DMS commerce cache is unavailable.
 
 derived_metrics:
   - platform_gmv_rmb = sp_gmv_rmb + tt_gmv_rmb
+  - platform_aov_rmb = platform_gmv_rmb / platform_units
   - onsite_roas = onsite_ad_gmv_rmb / onsite_ad_spend_rmb
   - offsite_roas = offsite_purchase_value_rmb / offsite_spend_rmb
   - media_spend_rmb = onsite_ad_spend_rmb + offsite_spend_rmb

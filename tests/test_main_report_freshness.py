@@ -22,6 +22,7 @@ class MainReportFreshnessTests(unittest.TestCase):
                 "freshness": {
                     "sp_gmv": date_value,
                     "tt_gmv": date_value,
+                    "platform_sales_bq": date_value,
                     "offsite": date_value,
                     "onsite_ads": date_value,
                     "onsite_products": date_value,

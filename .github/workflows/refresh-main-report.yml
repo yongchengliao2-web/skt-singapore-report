@@ -28,6 +28,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       SKT_REPORT_SESSION_TOKEN: ${{ secrets.REPORT_SESSION_TOKEN }}
       SKT_DMS_TOKEN: ${{ secrets.SKT_DMS_TOKEN }}
+      BQ_CREDENTIALS_JSON: ${{ secrets.BQ_CREDENTIALS_JSON }}
       PROJECT_NAME: skt-singapore-report
       LIVE_URL: https://skt-singapore-report.pages.dev/
 
@@ -76,6 +77,9 @@ jobs:
       - name: Refresh SKT voucher cache
         run: python tools/fetch_skt_voucher_cost.py --require-live
 
+      - name: Refresh SKT BigQuery platform cache
+        run: python tools/fetch_skt_bq_platform_daily.py --require-live
+
       - name: Build main report from Google Sheet
         run: python pipelines/build_skt_alignment.py
 
@@ -100,7 +104,9 @@ jobs:
           test -s site/skt-material-analysis.html
           test "$(find site/assets/material_snapshots -type f -name '*.jpg' | wc -l)" -gt 0
           grep -q 'id="refreshReport"' site/index.html
-          grep -q '"report_contract_version":"skt-main-report-dms-v2"' site/index.html
+          grep -q '"report_contract_version":"skt-main-report-bq-v1"' site/index.html
+          grep -q '"commerce_source":"BigQuery sg_dms_gmv_sales_daily"' site/index.html
+          grep -q '"platform_daily_audit"' site/index.html
           ! grep -q '经营' site/index.html
           ! grep -q '经营' site/skt-material-analysis.html
           ! grep -q 'L 列 Sales (Placed Order) (SGD)' site/index.html
