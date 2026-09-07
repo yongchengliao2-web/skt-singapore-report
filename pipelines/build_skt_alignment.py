@@ -686,7 +686,11 @@ def load_category_reference(path: Path, new_mapping_path: Path | None = None) ->
 def resolve_reference_product(category_ref: dict[str, Any], *values: Any) -> str:
     item_id_to_product = category_ref.get("item_id_to_product", {})
     item_name_by_normalized = category_ref.get("item_name_by_normalized", {})
-    normalized_values = [normalize_text(value) for value in values if clean_text(value)]
+    normalized_values = []
+    for value in values:
+        normalized = normalize_text(value)
+        if normalized:
+            normalized_values.append(normalized)
     for value in normalized_values:
         if value in item_id_to_product:
             return item_id_to_product[value]
@@ -717,9 +721,10 @@ def infer_offsite_advertised_product(category_ref: dict[str, Any], *values: Any)
 
     search_values = []
     for value in values:
-        if not clean_text(value):
+        normalized_value = normalize_text(value)
+        if not normalized_value:
             continue
-        search_values.append(normalize_text(value))
+        search_values.append(normalized_value)
         canonical_value = canonical_offsite_product_name(value)
         normalized_canonical_value = normalize_text(canonical_value)
         if normalized_canonical_value and normalized_canonical_value not in search_values:
@@ -879,7 +884,11 @@ def assign_onsite_products_to_offsite_catalog(
 
 
 def resolve_category(category_ref: dict[str, Any], *values: Any, default: str = "未归类") -> str:
-    normalized_values = [normalize_text(value) for value in values if clean_text(value)]
+    normalized_values = []
+    for value in values:
+        normalized = normalize_text(value)
+        if normalized:
+            normalized_values.append(normalized)
     for mapping_name in ("item_id_to_category", "sku_to_category", "item_name_to_category", "sku_name_to_category"):
         mapping = category_ref.get(mapping_name, {})
         for value in normalized_values:

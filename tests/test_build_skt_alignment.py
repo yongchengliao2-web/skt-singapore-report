@@ -18,6 +18,7 @@ from pipelines.build_skt_alignment import (
     match_platform_unit_products,
     normalize_audience_type,
     normalize_text,
+    resolve_category,
     finalize_daily_rows,
     validate_downloaded_sheet,
 )
@@ -67,6 +68,26 @@ class DownloadedSheetValidationTests(unittest.TestCase):
             self.write_csv(source, headers)
 
             validate_downloaded_sheet("站内产品数据-skt", source)
+
+    def test_placeholder_ad_fields_do_not_match_an_arbitrary_category(self) -> None:
+        category_ref = {
+            "item_id_to_category": {},
+            "sku_to_category": {},
+            "item_name_to_category": {},
+            "sku_name_to_category": {},
+            "searchable_names": [("5x洗面奶5x面霜5x水5x精华5x防晒", "5PCS")],
+            "keyword_categories": ["5PCS"],
+        }
+
+        category = resolve_category(
+            category_ref,
+            "-",
+            "#N/A",
+            "skintific",
+            default="泛店铺/无产品",
+        )
+
+        self.assertEqual(category, "泛店铺/无产品")
 
     def test_accepts_shifted_onsite_product_fields_by_name(self) -> None:
         headers = [
