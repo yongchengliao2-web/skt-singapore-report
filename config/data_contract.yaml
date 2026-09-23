@@ -93,8 +93,8 @@ source_tabs:
     gmv_sgd_field: Sales (Placed Order) (SGD)
     exchange_rate_field: 汇率
     normalized_paid_sales_field: product_paid_sales_rmb
-    source_sales_deduplication_factor: 2.0
-    source_sales_note: Divide source sales by 2 because the product data includes a duplicated summary row.
+    source_sales_deduplication_factor: 1.0
+    source_sales_note: Use source sales as-is; do not divide product GMV by 2.
     paid_units_field: Units (Paid Order)
     visitor_field: Product Visitors (Visit)
     page_view_field: Product Page Views
