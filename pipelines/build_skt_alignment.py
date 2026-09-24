@@ -917,6 +917,16 @@ def resolve_category(category_ref: dict[str, Any], *values: Any, default: str = 
     return default
 
 
+def resolve_onsite_ad_name_category(value: Any) -> str:
+    return {
+        normalize_text("Facial Cleanser"): "洁面",
+        normalize_text("Face Moisturizer"): "面霜",
+        normalize_text("Face"): "面霜",
+        normalize_text("防晒组"): "防晒",
+        normalize_text("Toner"): "水",
+    }.get(normalize_text(value), "")
+
+
 def resolve_categories(category_ref: dict[str, Any], *values: Any) -> list[str]:
     joined = clean_text(" ".join(clean_text(value) for value in values))
     split_parts = [part for part in re.split(r"combo:|[+＋/&、，,]", joined) if part.strip()]
@@ -1409,7 +1419,7 @@ def load_onsite_ads(
         item["onsite_conversions"] += conversions
         item["onsite_items_sold"] += items_sold
 
-        category = resolve_category(
+        category = resolve_onsite_ad_name_category(get_value(row, "Ad Name")) or resolve_category(
             category_ref,
             get_value(row, "Product ID"),
             get_value(row, "链接"),
@@ -5775,7 +5785,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       'voucher_spend_sgd', 'voucher_spend_rmb',
     ];
     function groupsForCategory(category) {
-      if (String(category || '').trim() === '泛店铺/无产品') return ['护肤'];
+      if (['泛店铺/无产品', '长尾', '长尾品'].includes(String(category || '').trim())) return ['护肤'];
       const parts = String(category || '长尾品')
         .split(/\\s*\\/\\s*/)
         .map(value => value.trim())
