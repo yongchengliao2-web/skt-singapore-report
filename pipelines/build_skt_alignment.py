@@ -5775,6 +5775,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       'voucher_spend_sgd', 'voucher_spend_rmb',
     ];
     function groupsForCategory(category) {
+      if (String(category || '').trim() === '泛店铺/无产品') return ['护肤'];
       const parts = String(category || '长尾品')
         .split(/\\s*\\/\\s*/)
         .map(value => value.trim())
