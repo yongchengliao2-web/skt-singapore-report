@@ -3597,7 +3597,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .category-products-grid {
       display: grid;
-      grid-template-columns: minmax(190px, 1.8fr) repeat(14, minmax(78px, 1fr));
+      grid-template-columns: minmax(190px, 1.8fr) repeat(15, minmax(78px, 1fr));
       min-width: 1480px;
       align-items: stretch;
     }
@@ -3607,7 +3607,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       border-bottom: 1px solid #dbe7f5;
       text-align: right;
     }
-    .category-products-grid > div:nth-child(15n + 1) {
+    .category-products-grid > div:nth-child(16n + 1) {
       text-align: left;
     }
     .category-products-head > div {
@@ -5135,6 +5135,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       row.media_spend_rmb = n(row.onsite_spend_rmb) + n(row.offsite_spend_rmb);
       row.media_sales_rmb = n(row.onsite_ad_gmv_rmb) + n(row.offsite_purchase_value_rmb);
       row.media_roas = row.media_spend_rmb ? row.media_sales_rmb / row.media_spend_rmb : null;
+      row.full_site_cost_rmb = row.media_spend_rmb + n(row.voucher_spend_rmb);
+      row.full_site_roi = row.full_site_cost_rmb ? n(row.product_paid_sales_rmb) / row.full_site_cost_rmb : null;
       row.add_to_cart_rate = n(row.product_visitors) ? n(row.product_add_to_cart_visitors) / n(row.product_visitors) : null;
       row.unit_conversion_rate = n(row.product_visitors) ? n(row.product_paid_units) / n(row.product_visitors) : null;
       row.sales_per_visitor = n(row.product_visitors) ? n(row.product_paid_sales_rmb) / n(row.product_visitors) : null;
@@ -5274,6 +5276,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         row.media_spend_rmb = row.media_available ? n(row.onsite_spend_rmb) + n(row.offsite_spend_rmb) : null;
         row.media_sales_rmb = row.media_available ? n(row.onsite_ad_gmv_rmb) + n(row.offsite_purchase_value_rmb) : null;
         row.media_roas = row.media_spend_rmb ? row.media_sales_rmb / row.media_spend_rmb : null;
+        row.full_site_cost_rmb = n(row.media_spend_rmb) + n(row.voucher_spend_rmb);
+        row.full_site_roi = row.full_site_cost_rmb ? n(row.paid_sales_rmb) / row.full_site_cost_rmb : null;
         row.media_spend_ratio = row.media_available && n(row.paid_sales_rmb)
           ? row.media_spend_rmb / n(row.paid_sales_rmb)
           : null;
@@ -5842,6 +5846,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       return `
         <td>${tableMetricHtml(row.product_paid_sales_rmb, previous.product_paid_sales_rmb, money)}</td>
         <td>${tableMetricHtml(row.sales_share, previous.sales_share, ratio, { neutral: true })}</td>
+        <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas)}</td>
         <td>${tableMetricHtml(row.product_visitors, previous.product_visitors, value => fmt0.format(n(value)))}</td>
         <td>${tableMetricHtml(row.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</td>
         <td>${tableMetricHtml(row.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</td>
@@ -5873,7 +5878,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <table class="group-detail-table category-detail-table">
           <thead>
             <tr>
-              <th aria-label="展开品类"></th><th>分组</th><th>商品销售额RMB</th><th>销售占比</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th><th>优惠券花费</th><th>优惠券占比</th>
+              <th aria-label="展开品类"></th><th>分组</th><th>商品销售额RMB</th><th>销售占比</th><th>全站ROI</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th><th>优惠券花费</th><th>优惠券占比</th>
             </tr>
           </thead>
           <tbody>
@@ -5967,7 +5972,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         return `
           <div class="category-products-detail">
             <div class="category-products-grid category-products-head">
-              <div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>访问</div><div>加购率</div><div>支付件转化</div><div>站内花费</div><div>站内ROAS</div><div>站外花费RMB</div><div>站外ROAS</div><div>总媒体花费</div><div>综合ROAS</div><div>媒体/销售额</div><div>优惠券花费</div><div>优惠券占比</div>
+              <div>商品</div><div>商品销售额RMB</div><div>销售占比</div><div>全站ROI</div><div>访问</div><div>加购率</div><div>支付件转化</div><div>站内花费</div><div>站内ROAS</div><div>站外花费RMB</div><div>站外ROAS</div><div>总媒体花费</div><div>综合ROAS</div><div>媒体/销售额</div><div>优惠券花费</div><div>优惠券占比</div>
             </div>
             ${categoryProducts.map(product => {
               const previous = compareProductsByKey.get(`${category}||${product.product || '未命名单品'}`) || {};
@@ -5976,6 +5981,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <div class="category-product-name">${escapeHtml(product.product || '未命名单品')}</div>
                   <div>${tableMetricHtml(product.paid_sales_rmb, previous.paid_sales_rmb, money)}</div>
                   <div>${tableMetricHtml(product.gmv_share, previous.gmv_share, ratio, { neutral: true })}</div>
+                  <div>${tableMetricHtml(product.full_site_roi, previous.full_site_roi, roas)}</div>
                   <div>${tableMetricHtml(product.visitors, previous.visitors, value => fmt0.format(n(value)))}</div>
                   <div>${tableMetricHtml(product.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</div>
                   <div>${tableMetricHtml(product.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</div>
@@ -5998,7 +6004,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <table class="category-detail-table">
           <thead>
             <tr>
-              <th aria-label="展开商品"></th><th>品类</th><th>商品销售额RMB</th><th>销售占比</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th><th>优惠券花费</th><th>优惠券占比</th>
+              <th aria-label="展开商品"></th><th>品类</th><th>商品销售额RMB</th><th>销售占比</th><th>全站ROI</th><th>访问</th><th>加购率</th><th>支付件转化</th><th>站内花费</th><th>站内ROAS</th><th>站外花费RMB</th><th>站外ROAS</th><th>总媒体花费</th><th>综合ROAS</th><th>媒体/销售额</th><th>优惠券花费</th><th>优惠券占比</th>
             </tr>
           </thead>
           <tbody>
@@ -6016,6 +6022,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td><div class="category-summary-name"><strong>${escapeHtml(row.category)}</strong><span>${categoryProducts.length} 个商品</span></div></td>
                   <td>${tableMetricHtml(row.product_paid_sales_rmb, previous.product_paid_sales_rmb, money)}</td>
                   <td>${tableMetricHtml(row.sales_share, previous.sales_share, ratio, { neutral: true })}</td>
+                  <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas)}</td>
                   <td>${tableMetricHtml(row.product_visitors, previous.product_visitors, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</td>
                   <td>${tableMetricHtml(row.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</td>
@@ -6030,7 +6037,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td>${tableMetricHtml(row.voucher_ratio, previous.voucher_ratio, ratio, { inverse: true })}</td>
                 </tr>
                 <tr class="category-products-row" id="${detailId}" data-category-products-key="${escapeHtml(row.category)}" hidden>
-                  <td colspan="16">${categoryProducts.length ? productDetailHtml(row.category, categoryProducts) : ''}</td>
+                  <td colspan="17">${categoryProducts.length ? productDetailHtml(row.category, categoryProducts) : ''}</td>
                 </tr>
               `;
             }).join('')}
@@ -6189,7 +6196,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th>商品</th><th>品类</th><th>商品销售额RMB</th><th>GMV占比</th><th>销量</th><th>访问</th><th>页面浏览</th><th>加购访客</th><th>加购率</th><th>支付件转化</th><th>商品点击率</th><th>客访价值</th><th>优惠券花费</th><th>优惠券占比</th>
+              <th>商品</th><th>品类</th><th>商品销售额RMB</th><th>GMV占比</th><th>全站ROI</th><th>销量</th><th>访问</th><th>页面浏览</th><th>加购访客</th><th>加购率</th><th>支付件转化</th><th>商品点击率</th><th>客访价值</th><th>优惠券花费</th><th>优惠券占比</th>
             </tr>
           </thead>
           <tbody>
@@ -6201,6 +6208,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td><span class="category-cell">${escapeHtml(row.category || '-')}</span></td>
                   <td>${tableMetricHtml(row.paid_sales_rmb, previous.paid_sales_rmb, money)}</td>
                   <td>${tableMetricHtml(row.gmv_share, previous.gmv_share, ratio, { neutral: true })}</td>
+                  <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas)}</td>
                   <td>${tableMetricHtml(row.paid_units, previous.paid_units, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.visitors, previous.visitors, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.page_views, previous.page_views, value => fmt0.format(n(value)))}</td>
