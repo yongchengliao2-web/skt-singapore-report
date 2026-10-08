@@ -710,6 +710,7 @@ def canonical_offsite_product_name(value: Any) -> str:
     text = clean_text(value)
     aliases = (
         ("半哑光气垫", "半哑精华绿色气垫"),
+        ("PDRN美白啫喱片", "PDRN美白棉片"),
         ("面霜合集", "面霜合集"),
         ("防晒合集", "防晒"),
         ("洁面合集", "洁面"),
