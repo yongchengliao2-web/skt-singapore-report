@@ -193,6 +193,14 @@ Reset-DeployDir
 Get-ChildItem -LiteralPath $SiteDir -Force | ForEach-Object {
   Copy-Item -LiteralPath $_.FullName -Destination $DeployDir -Recurse -Force
 }
+Invoke-LoggedNative -FilePath $Npx -Arguments @(
+  "--yes", "html-minifier-terser",
+  (Join-Path $DeployDir "index.html"),
+  "--collapse-whitespace", "--remove-comments", "--minify-css", "true", "--minify-js", "true",
+  "-o", (Join-Path $DeployDir "index.min.html")
+)
+Move-Item -LiteralPath (Join-Path $DeployDir "index.min.html") -Destination (Join-Path $DeployDir "index.html") -Force
+Copy-Item -LiteralPath (Join-Path $DeployDir "index.html") -Destination (Join-Path $DeployDir "skt-onsite-offsite-alignment.html") -Force
 Copy-Item -LiteralPath $PasswordWorkerPath -Destination (Join-Path $DeployDir "_worker.js") -Force
 Set-Content -LiteralPath (Join-Path $DeployDir "_headers") -Value @"
 /*
