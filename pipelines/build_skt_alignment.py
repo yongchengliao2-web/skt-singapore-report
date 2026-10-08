@@ -4666,6 +4666,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const change = (currentValue - previousValue) / Math.abs(previousValue);
       return `${change >= 0 ? '+' : ''}${(change * 100).toFixed(1)}%`;
     }
+    function absoluteDeltaText(current, previous) {
+      const currentValue = n(current);
+      const previousValue = n(previous);
+      if (!Number.isFinite(currentValue) || !Number.isFinite(previousValue)) return '—';
+      if (!previousValue && !currentValue) return '持平';
+      if (!previousValue) return currentValue ? '新增' : '—';
+      const diff = currentValue - previousValue;
+      return `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}`;
+    }
     function deltaClass(current, previous, options = {}) {
       if (options.neutral || !n(previous)) return '';
       const diff = n(current) - n(previous);
@@ -4690,7 +4699,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function tableMetricHtml(current, previous, formatter, options = {}) {
       const compareClass = metricDeltaClass(current, previous);
-      return `<div class="table-primary">${formatter(current)}</div><div class="table-compare ${compareClass}">环比 ${deltaText(current, previous)}</div>`;
+      const compareText = options.absoluteDelta ? absoluteDeltaText(current, previous) : deltaText(current, previous);
+      return `<div class="table-primary">${formatter(current)}</div><div class="table-compare ${compareClass}">环比 ${compareText}</div>`;
     }
     function tableAvailableMetricHtml(current, previous, formatter, currentAvailable, previousAvailable, options = {}) {
       if (!currentAvailable) return '<span class="not-advertised-value">-</span>';
@@ -5858,7 +5868,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <td>${tableMetricHtml(row.product_paid_sales_rmb, previous.product_paid_sales_rmb, money)}</td>
         <td>${tableMetricHtml(row.sales_share, previous.sales_share, ratio, { neutral: true })}</td>
         <td>${tableMetricHtml(row.full_site_cost_rmb, previous.full_site_cost_rmb, money, { neutral: true })}</td>
-        <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas)}</td>
+        <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas, { absoluteDelta: true })}</td>
         <td>${tableMetricHtml(row.product_visitors, previous.product_visitors, value => fmt0.format(n(value)))}</td>
         <td>${tableMetricHtml(row.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</td>
         <td>${tableMetricHtml(row.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</td>
@@ -5991,7 +6001,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <div>${tableMetricHtml(product.paid_sales_rmb, previous.paid_sales_rmb, money)}</div>
                   <div>${tableMetricHtml(product.gmv_share, previous.gmv_share, ratio, { neutral: true })}</div>
                   <div>${tableMetricHtml(product.full_site_cost_rmb, previous.full_site_cost_rmb, money, { neutral: true })}</div>
-                  <div>${tableMetricHtml(product.full_site_roi, previous.full_site_roi, roas)}</div>
+                  <div>${tableMetricHtml(product.full_site_roi, previous.full_site_roi, roas, { absoluteDelta: true })}</div>
                   <div>${tableMetricHtml(product.visitors, previous.visitors, value => fmt0.format(n(value)))}</div>
                   <div>${tableMetricHtml(product.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</div>
                   <div>${tableMetricHtml(product.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</div>
@@ -6030,7 +6040,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td>${tableMetricHtml(row.product_paid_sales_rmb, previous.product_paid_sales_rmb, money)}</td>
                   <td>${tableMetricHtml(row.sales_share, previous.sales_share, ratio, { neutral: true })}</td>
                   <td>${tableMetricHtml(row.full_site_cost_rmb, previous.full_site_cost_rmb, money, { neutral: true })}</td>
-                  <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas)}</td>
+                  <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas, { absoluteDelta: true })}</td>
                   <td>${tableMetricHtml(row.product_visitors, previous.product_visitors, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.add_to_cart_rate, previous.add_to_cart_rate, ratio)}</td>
                   <td>${tableMetricHtml(row.unit_conversion_rate, previous.unit_conversion_rate, ratio)}</td>
@@ -6214,7 +6224,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                   <td>${tableMetricHtml(row.paid_sales_rmb, previous.paid_sales_rmb, money)}</td>
                   <td>${tableMetricHtml(row.gmv_share, previous.gmv_share, ratio, { neutral: true })}</td>
                   <td>${tableMetricHtml(row.full_site_cost_rmb, previous.full_site_cost_rmb, money, { neutral: true })}</td>
-                  <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas)}</td>
+                  <td>${tableMetricHtml(row.full_site_roi, previous.full_site_roi, roas, { absoluteDelta: true })}</td>
                   <td>${tableMetricHtml(row.paid_units, previous.paid_units, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.visitors, previous.visitors, value => fmt0.format(n(value)))}</td>
                   <td>${tableMetricHtml(row.page_views, previous.page_views, value => fmt0.format(n(value)))}</td>
