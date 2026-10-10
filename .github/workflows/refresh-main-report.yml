@@ -89,17 +89,6 @@ jobs:
           --business-day-lag 2
           --max-stale-sources 5
 
-      - name: Minify main report for Cloudflare Pages size limit
-        run: |
-          npx --yes html-minifier-terser site/index.html \
-            --collapse-whitespace \
-            --remove-comments \
-            --minify-css true \
-            --minify-js true \
-            -o site/index.min.html
-          mv site/index.min.html site/index.html
-          cp site/index.html site/skt-onsite-offsite-alignment.html
-
       - name: Restore material page and validate bundle
         shell: bash
         run: |
@@ -135,6 +124,17 @@ jobs:
           grep -q 'voucher_audit' site/index.html
           grep -q 'PAGE_DATA' site/skt-material-analysis.html
           grep -q '"snapshot_url":"/assets/material_snapshots/' site/skt-material-analysis.html
+
+      - name: Minify main report for Cloudflare Pages size limit
+        run: |
+          npx --yes html-minifier-terser site/index.html \
+            --collapse-whitespace \
+            --remove-comments \
+            --minify-css true \
+            --minify-js true \
+            -o site/index.min.html
+          mv site/index.min.html site/index.html
+          cp site/index.html site/skt-onsite-offsite-alignment.html
 
       - name: Prepare Cloudflare Pages bundle
         shell: bash
