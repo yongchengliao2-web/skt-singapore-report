@@ -43,7 +43,7 @@ def validate_html(output_path: Path, content: bytes) -> None:
     if "material" in filename and b"PAGE_DATA" not in content:
         raise RuntimeError(f"material page marker is missing: {output_path}")
     if filename in {"index.html", "skt-onsite-offsite-alignment.html"}:
-        if b"const DATA =" not in content:
+        if not re.search(rb"const DATA\s*=\s*", content):
             raise RuntimeError(f"main report marker is missing: {output_path}")
         missing_markers = [marker.decode("ascii") for marker in MAIN_REPORT_REQUIRED_MARKERS if marker not in content]
         if missing_markers:
