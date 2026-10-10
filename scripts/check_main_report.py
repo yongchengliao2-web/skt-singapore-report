@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 from datetime import date, datetime, timedelta, timezone
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
-DATA_MARKER = "const DATA = "
+DATA_MARKER_RE = re.compile(r"const DATA\s*=\s*")
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 DEFAULT_SOURCE_LAG_BUSINESS_DAYS = 2
 REQUIRED_FRESHNESS = (
@@ -22,10 +23,10 @@ REQUIRED_FRESHNESS = (
 
 def read_report_payload(path: Path) -> dict[str, Any]:
     html = path.read_text(encoding="utf-8")
-    marker_index = html.find(DATA_MARKER)
-    if marker_index < 0:
+    marker_match = DATA_MARKER_RE.search(html)
+    if not marker_match:
         raise RuntimeError(f"main report DATA payload is missing: {path}")
-    json_start = marker_index + len(DATA_MARKER)
+    json_start = marker_match.end()
     try:
         payload, _ = json.JSONDecoder().raw_decode(html[json_start:])
     except json.JSONDecodeError as exc:
