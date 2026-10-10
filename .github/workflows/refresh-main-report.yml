@@ -83,6 +83,17 @@ jobs:
       - name: Build main report from Google Sheet
         run: python pipelines/build_skt_alignment.py
 
+      - name: Minify main report for Cloudflare Pages size limit
+        run: |
+          npx --yes html-minifier-terser site/index.html \
+            --collapse-whitespace \
+            --remove-comments \
+            --minify-css true \
+            --minify-js true \
+            -o site/index.min.html
+          mv site/index.min.html site/index.html
+          cp site/index.html site/skt-onsite-offsite-alignment.html
+
       - name: Validate main report freshness
         run: >-
           python scripts/check_main_report.py site/index.html
