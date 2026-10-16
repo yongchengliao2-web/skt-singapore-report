@@ -6745,7 +6745,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       chunks.forEach(chunk => Object.assign(DATA, chunk));
     }
     async function setup() {
-      await loadReportData();
       setupDateControls();
       setupCategoryControls();
       setupSideNav();
@@ -6778,12 +6777,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       });
       window.addEventListener('resize', () => Object.values(charts).forEach(chart => chart.resize()));
       renderAll();
+      loadReportData().then(() => {
+        renderAll();
+      }).catch(error => {
+        console.error(error);
+        const main = byId('app') || document.body;
+        main.insertAdjacentHTML('afterbegin', '<p class="error-state">报表明细数据加载失败，请刷新页面重试。</p>');
+      });
     }
-    setup().catch(error => {
-      console.error(error);
-      const main = byId('app') || document.body;
-      main.insertAdjacentHTML('afterbegin', '<p class="error-state">报表明细数据加载失败，请刷新页面重试。</p>');
-    });
+    setup();
   </script>
 </body>
 </html>
