@@ -122,6 +122,11 @@ jobs:
           grep -q '优惠券花费' site/index.html
           grep -q '优惠券占比' site/index.html
           grep -q 'voucher_audit' site/index.html
+          test -s site/data/report/product_daily_rows.json
+          test -s site/data/report/category_daily_rows.json
+          test "$(stat -c %s site/index.html)" -lt 26214400
+          test "$(stat -c %s site/data/report/product_daily_rows.json)" -lt 26214400
+          test "$(stat -c %s site/data/report/category_daily_rows.json)" -lt 26214400
           grep -q 'PAGE_DATA' site/skt-material-analysis.html
           grep -q '"snapshot_url":"/assets/material_snapshots/' site/skt-material-analysis.html
 

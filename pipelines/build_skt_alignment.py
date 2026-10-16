@@ -21,6 +21,7 @@ RAW_DIR = ROOT / "data" / "raw"
 CACHE_DIR = ROOT / "cache"
 OUTPUT_DIR = ROOT / "output"
 SITE_DIR = ROOT / "site"
+REPORT_DATA_KEYS = ("product_daily_rows", "category_daily_rows")
 
 SPREADSHEET_ID = "1d5dBa6AJsJNNcA23NoNJd4OX3douJ4gWmHa94vJdRpk"
 DEFAULT_FX_RATE = 5.35
@@ -4390,6 +4391,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <script>
     const DATA = __PAYLOAD__;
+    const REPORT_DATA_FILES = [
+      'data/report/product_daily_rows.json',
+      'data/report/category_daily_rows.json',
+    ];
     const charts = {};
     const fmt0 = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 });
     const fmt1 = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
@@ -6733,7 +6738,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         pollRefreshStatus(requestId);
       }
     }
-    function setup() {
+    async function loadReportData() {
+      const responses = await Promise.all(REPORT_DATA_FILES.map(path => fetch(path, { cache: 'no-store' })));
+      if (responses.some(response => !response.ok)) throw new Error('报表明细数据加载失败');
+      const chunks = await Promise.all(responses.map(response => response.json()));
+      chunks.forEach(chunk => Object.assign(DATA, chunk));
+    }
+    async function setup() {
+      await loadReportData();
       setupDateControls();
       setupCategoryControls();
       setupSideNav();
@@ -6767,7 +6779,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       window.addEventListener('resize', () => Object.values(charts).forEach(chart => chart.resize()));
       renderAll();
     }
-    setup();
+    setup().catch(error => {
+      console.error(error);
+      const main = byId('app') || document.body;
+      main.insertAdjacentHTML('afterbegin', '<p class="error-state">报表明细数据加载失败，请刷新页面重试。</p>');
+    });
   </script>
 </body>
 </html>
@@ -6775,8 +6791,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 def build_html(payload: dict[str, Any]) -> str:
-    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    page_payload = {key: value for key, value in payload.items() if key not in REPORT_DATA_KEYS}
+    payload_json = json.dumps(page_payload, ensure_ascii=False, separators=(",", ":"))
     return HTML_TEMPLATE.replace("__PAYLOAD__", payload_json)
+
+
+def write_report_data_chunks(payload: dict[str, Any], roots: tuple[Path, ...]) -> None:
+    for root in roots:
+        report_dir = root / "data" / "report"
+        if report_dir.is_dir():
+            shutil.rmtree(report_dir)
+        report_dir.mkdir(parents=True, exist_ok=True)
+        for key in REPORT_DATA_KEYS:
+            (report_dir / f"{key}.json").write_text(
+                json.dumps({key: payload.get(key, [])}, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
 
 
 def validate_report_html(html: str) -> None:
@@ -6857,6 +6887,7 @@ def run() -> Path:
     SITE_DIR.mkdir(parents=True, exist_ok=True)
     payload = build_payload()
     write_product_mapping_gaps(payload)
+    write_report_data_chunks(payload, (SITE_DIR, ROOT))
     html = build_html(payload)
     validate_report_html(html)
     output_path = OUTPUT_DIR / "skt_onsite_offsite_alignment.html"
