@@ -4336,7 +4336,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="table-wrap" id="categoryTable"></div>
     </section>
 
-    <section class="section" id="product-drilldown">
+    <section class="section" id="product-drilldown" style="min-width:0;max-width:100%">
       <div class="section-head">
         <div>
           <h2>产品明细</h2>
@@ -4344,6 +4344,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </div>
       </div>
       <div class="table-wrap" id="productTable"></div>
+      <div id="productTrendPanel" style="margin-top:24px;width:min(100%,calc(100vw - 96px));min-width:0">
+        <div class="section-head" style="flex-wrap:wrap;gap:12px">
+          <h3 style="margin:0">产品月度曲线</h3>
+          <select id="productTrendSelect" aria-label="选择曲线产品" style="width:320px;max-width:100%;min-width:0"></select>
+        </div>
+        <div id="productTrendMetrics" style="display:flex;flex-wrap:wrap;gap:12px;margin:12px 0"></div>
+        <p class="section-note">实线本期 / 虚线上期；最多选择3个指标，按各指标双周期最高值归一为100；悬停查看原始数值。转化率为支付件数 / 访客。</p>
+        <div class="chart" id="productTrendChart" style="height:320px;min-width:0"></div>
+      </div>
     </section>
 
     <section class="section" id="offsite-product-detail">
@@ -6206,6 +6215,109 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <p class="action-signal-footnote">共核对 ${actionRows.length} 个站外产品，其中 ${comparableRows.length} 个具备双周期有效基数${excludedCount ? `，${excludedCount} 个因上期花费或上期 SP 商品GMV为 0 未下动作结论` : ''}。执行前再结合库存、利润与素材状态确认。</p>
       `;
     }
+    let productTrendKey = '';
+    let productTrendMetrics = ['paid_sales_rmb', 'visitors', 'unit_conversion_rate'];
+    const PRODUCT_TREND_METRICS = [
+      { key: 'paid_sales_rmb', name: 'GMV', color: '#2563eb', format: money },
+      { key: 'visitors', name: '访客', color: '#0891b2', format: value => fmt0.format(value) },
+      { key: 'unit_conversion_rate', name: '转化率', color: '#0d9488', format: ratio },
+      { key: 'full_site_cost_rmb', name: '总花费', color: '#f97316', format: money },
+      { key: 'onsite_spend_rmb', name: '站内广告花费', color: '#8b5cf6', format: money },
+      { key: 'offsite_spend_rmb', name: '站外广告花费', color: '#db2777', format: money },
+      { key: 'voucher_spend_rmb', name: '优惠券花费', color: '#ca8a04', format: money },
+    ];
+    function productTrendIdentity(row) {
+      return `${row.category || '未归类'}||${row.product || '未命名单品'}`;
+    }
+    function productTrendDaily(period, rangeName) {
+      if (period.invalid) return [];
+      const productByDay = new Map();
+      (DATA.product_daily_rows || []).forEach(row => {
+        if (productTrendIdentity(row) !== productTrendKey || !rowInPeriod(row, period[rangeName])) return;
+        if (!productByDay.has(row.date)) productByDay.set(row.date, {
+          ...row, paid_sales_rmb: 0, visitors: 0, paid_units: 0, voucher_spend_rmb: 0,
+        });
+        const target = productByDay.get(row.date);
+        ['paid_sales_rmb', 'visitors', 'paid_units', 'voucher_spend_rmb'].forEach(key => { target[key] += n(row[key]); });
+      });
+      const onsite = selectedOnsiteAdProductRows(period, rangeName);
+      // Use the same product attribution and cost calculation as the detail table, day by day.
+      return dateSeries(period[rangeName].start, period[rangeName].end).map(date => {
+        const source = productByDay.get(date);
+        if (!source) return { date };
+        const dayPeriod = { ...period, [rangeName]: { start: date, end: date } };
+        const dayOffsite = selectedOffsiteProductRows(dayPeriod, rangeName);
+        const row = enrichProductMediaRows([source], onsite.filter(item => item.date === date), dayOffsite)[0];
+        row.unit_conversion_rate = row.visitors ? row.paid_units / row.visitors : null;
+        return row;
+      });
+    }
+    function renderProductTrend(productRows, compareProductRows, period) {
+      const options = new Map();
+      [...productRows, ...compareProductRows].forEach(row => options.set(productTrendIdentity(row), row));
+      if (!options.has(productTrendKey)) productTrendKey = options.keys().next().value || '';
+      const select = byId('productTrendSelect');
+      select.innerHTML = [...options].map(([key, row]) => `<option value="${escapeHtml(key)}">${escapeHtml(row.product)} · ${escapeHtml(row.category)}</option>`).join('');
+      select.value = productTrendKey;
+      select.disabled = !options.size;
+      select.onchange = () => {
+        productTrendKey = select.value;
+        renderProductTrend(productRows, compareProductRows, period);
+      };
+      const controls = byId('productTrendMetrics');
+      controls.innerHTML = PRODUCT_TREND_METRICS.map(metric => {
+        const checked = productTrendMetrics.includes(metric.key);
+        return `<label style="display:inline-flex;align-items:center;gap:5px;color:${metric.color};font-size:13px"><input type="checkbox" value="${metric.key}" ${checked ? 'checked' : ''} ${!checked && productTrendMetrics.length >= 3 ? 'disabled' : ''}>${metric.name}</label>`;
+      }).join('');
+      controls.onchange = event => {
+        const input = event.target;
+        if (input.type !== 'checkbox') return;
+        productTrendMetrics = input.checked ? [...productTrendMetrics, input.value].slice(0, 3) : productTrendMetrics.filter(key => key !== input.value);
+        renderProductTrend(productRows, compareProductRows, period);
+      };
+      byId('productTable').querySelectorAll('[data-product-trend-key]').forEach(row => {
+        row.style.backgroundColor = row.dataset.productTrendKey === productTrendKey ? '#eff6ff' : '';
+        row.setAttribute('aria-selected', String(row.dataset.productTrendKey === productTrendKey));
+      });
+      const chart = initChart('productTrendChart');
+      const current = productTrendDaily(period, 'current');
+      const compare = productTrendDaily(period, 'compare');
+      const length = Math.max(current.length, compare.length);
+      const selected = PRODUCT_TREND_METRICS.filter(metric => productTrendMetrics.includes(metric.key));
+      const series = [];
+      selected.forEach(metric => {
+        const values = [...current, ...compare].map(row => row[metric.key]).filter(value => value != null);
+        const maximum = Math.max(0, ...values);
+        [current, compare].forEach((rows, index) => series.push({
+          name: `${metric.name} · ${index ? '上期' : '本期'}`,
+          type: 'line', connectNulls: false, showSymbol: length <= 31, symbolSize: 6,
+          lineStyle: { type: index ? 'dashed' : 'solid', width: index ? 1.5 : 2.5, opacity: index ? 0.45 : 1 },
+          itemStyle: { color: metric.color, opacity: index ? 0.45 : 1 },
+          data: Array.from({ length }, (_, offset) => {
+            const row = rows[offset];
+            const value = row?.[metric.key];
+            return { value: value == null ? null : maximum ? value / maximum * 100 : 0, raw: value, date: row?.date || '' };
+          }),
+        }));
+      });
+      chart.setOption({
+        title: { text: !options.size ? '暂无匹配商品数据' : !selected.length ? '请选择指标' : '', left: 'center', top: 'middle', textStyle: { fontSize: 14, color: '#64748b' } },
+        grid: { left: 45, right: 20, top: 25, bottom: 48 },
+        tooltip: { trigger: 'axis', confine: true, formatter: params => params.map(param => {
+          const metric = selected[Math.floor(param.seriesIndex / 2)];
+          return `${param.marker}${escapeHtml(param.seriesName)} (${param.data.date || '无对应日期'})：${param.data.raw == null ? '暂无数据' : metric.format(param.data.raw)}`;
+        }).join('<br/>') },
+        xAxis: { type: 'category', data: Array.from({ length }, (_, index) => index + 1), axisLabel: { formatter: value => `第${value}天`, hideOverlap: true }, axisTick: { show: false } },
+        yAxis: { type: 'value', min: 0, max: 100, splitLine: { lineStyle: { color: '#e2e8f0' } } },
+        series,
+      }, true);
+      chart.resize();
+      byId('productTable').querySelectorAll('[data-product-trend-key]').forEach(row => {
+        const choose = () => { productTrendKey = row.dataset.productTrendKey; renderProductTrend(productRows, compareProductRows, period); };
+        row.onclick = choose;
+        row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); choose(); } };
+      });
+    }
     function renderProductTable(productRows, compareProductRows) {
       const rows = productRows.slice(0, 40);
       if (!rows.length) {
@@ -6225,7 +6337,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
               const previous = compareByProduct.get(`${row.category || '-'}||${row.product || '-'}`) || {};
               return `
                 <tr>
-                  <td><div class="product-cell">${escapeHtml(row.product)}</div></td>
+                  <td data-product-trend-key="${escapeHtml(productTrendIdentity(row))}" tabindex="0" role="button" title="查看产品曲线" style="cursor:pointer"><div class="product-cell">${escapeHtml(row.product)}</div></td>
                   <td><span class="category-cell">${escapeHtml(row.category || '-')}</span></td>
                   <td>${tableMetricHtml(row.paid_sales_rmb, previous.paid_sales_rmb, money)}</td>
                   <td>${tableMetricHtml(row.gmv_share, previous.gmv_share, ratio, { neutral: true })}</td>
@@ -6405,6 +6517,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       renderGroupTable(groupRows, compareGroupRows, categoryRows, compareCategoryRows);
       renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows);
       renderProductTable(productRows, compareProductRows);
+      renderProductTrend(productRows, compareProductRows, period);
       renderOffsiteProductTable(offsiteProductView.current, offsiteProductView.compare);
       renderOffsiteActionSignals(offsiteProductView.current, offsiteProductView.compare, period);
       renderDailyTable(rows);
@@ -6839,6 +6952,9 @@ def validate_report_html(html: str) -> None:
         'id="product-visitor-conversion"',
         'id="productMediaChart"',
         'id="productTrafficChart"',
+        'id="productTrendChart"',
+        "function renderProductTrend",
+        "renderProductTrend(productRows, compareProductRows, period)",
         "function renderProductMediaChart",
         "function renderProductTrafficChart",
         "renderProductMediaChart(productRows)",
