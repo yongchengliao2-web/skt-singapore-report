@@ -139,18 +139,19 @@ source_tabs:
     rule: Use the named fields rather than fixed column positions. Fill down blank 分组 and group-level 品类 cells. SKT映射 takes priority for Item ID, product, category, and group relationships; use 品类表 only for Item IDs absent from SKT映射.
 
   onsite_voucher_cost:
-    source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_cost_by_item
+    source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_id_cost
+    distribution_source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_cost_by_item
     brand_code: SKT
     date_field: period_start
     item_id_field: item_id
-    seller_voucher_cost_field: seller_voucher_cost_sgd
-    shopee_voucher_cost_field: shopee_voucher_cost_sgd
-    metric_field: net_voucher_cost_sgd
+    seller_voucher_cost_field: seller_voucher_cost
+    estimation_factor: 0.55
+    metric_field: seller_voucher_cost * 0.55
     cache: cache/skt_voucher_item_daily.json
     currency: SGD
     display_currency: RMB
-    exchange_rate: 5.23
-    rule: Keep the latest row per business_key, aggregate net_voucher_cost_sgd by period_start and Item ID, then convert SGD to RMB with 5.23. Net voucher cost is seller voucher cost minus Shopee voucher cost. Aggregate to product, category, group, and daily levels; voucher ratio is voucher spend RMB divided by onsite product GMV RMB.
+    exchange_rate: 5.2
+    rule: Match budget planning. Keep latest business_key by loaded_at and payload_hash. Round daily SUM(seller_voucher_cost) * 0.55 to 2 decimals in SGD, distribute using same-day item net voucher cost weights, then convert at 5.2 RMB per SGD. Keep days without positive total item weights under unallocated Item ID 0 (长尾品). Reconcile item, category and group totals to daily cost. Allocation is not exact item attribution.
 
   platform_unit_supplements:
     primary_source: DMS SKU detail
@@ -186,5 +187,5 @@ derived_metrics:
   - add_to_cart_rate = product_add_to_cart_visitors / product_visitors
   - unit_conversion_rate = product_paid_units / product_visitors
   - sales_per_visitor = product_paid_sales_rmb / product_visitors
-  - voucher_spend_rmb = voucher_spend_sgd * 5.23
+  - voucher_spend_rmb = voucher_spend_sgd * 5.2
   - voucher_ratio = voucher_spend_rmb / product_paid_sales_rmb

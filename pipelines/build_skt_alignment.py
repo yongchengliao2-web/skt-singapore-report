@@ -29,13 +29,13 @@ DEFAULT_OFFSITE_FX_RATE = 6.9
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8))
 REPORT_CONTRACT_VERSION = "skt-main-report-bq-v1"
 ONSITE_PRODUCT_SALES_DEDUPLICATION_FACTOR = 1.0
-VOUCHER_SGD_TO_RMB = 5.23
+VOUCHER_SGD_TO_RMB = 5.2
 VOUCHER_CACHE_PATH = CACHE_DIR / "skt_voucher_item_daily.json"
 BQ_PLATFORM_CACHE_PATH = CACHE_DIR / "skt_bq_platform_daily.json"
 DMS_COMMERCE_CACHE_PATH = ROOT / "data" / "dms" / "skt_dms_commerce_latest.json"
 VOUCHER_SOURCE_TABLE = (
     "advance-rush-406115.dim_shopee_ads_performance."
-    "sg_skt_onsite_voucher_cost_by_item"
+    "sg_skt_onsite_voucher_id_cost"
 )
 BQ_PLATFORM_SOURCE_TABLE = (
     "advance-rush-406115.dim_shopee_ads_performance."
@@ -2411,6 +2411,8 @@ def load_voucher_rows(path: Path, category_ref: dict[str, Any]) -> tuple[list[di
     source_rows = payload.get("rows") or []
     if metadata.get("brand") != "SKT" or metadata.get("source_table") != VOUCHER_SOURCE_TABLE:
         raise ValueError("优惠券缓存来源不在 SKT 白名单")
+    if metadata.get("estimation_factor") != 0.55 or metadata.get("fx_rate") != VOUCHER_SGD_TO_RMB:
+        raise ValueError("优惠券缓存尚未切换到规划预算口径，请重新取数")
     if not isinstance(source_rows, list) or not source_rows:
         raise ValueError("优惠券缓存为空")
     if int(metadata.get("row_count") or 0) != len(source_rows):
@@ -2604,6 +2606,8 @@ def enrich_payload_with_vouchers(
     audit = {
         "source_table": VOUCHER_SOURCE_TABLE,
         "definition": metadata.get("definition"),
+        "estimation_factor": metadata.get("estimation_factor"),
+        "distribution_source_table": metadata.get("distribution_source_table"),
         "currency": "SGD",
         "fx_rate": VOUCHER_SGD_TO_RMB,
         "date_start": metadata.get("date_start"),
@@ -2780,10 +2784,10 @@ def build_payload() -> dict[str, Any]:
             },
             {
                 "module": "优惠券",
-                "sheet": "BigQuery sg_skt_onsite_voucher_cost_by_item",
+                "sheet": "BigQuery sg_skt_onsite_voucher_id_cost",
                 "date": "period_start",
-                "metric": "net_voucher_cost_sgd",
-                "normalization": f"按 Item ID 汇总净优惠券成本（商家承担 - Shopee承担），1 SGD = {VOUCHER_SGD_TO_RMB:g} RMB；优惠券占比 = 优惠券花费RMB / 商品销售额RMB",
+                "metric": "seller_voucher_cost × 0.55",
+                "normalization": f"复用规划预算：商家优惠券承担 × 0.55，按当日商品净券明细比例分摊；无明细保留至长尾品。1 SGD = {VOUCHER_SGD_TO_RMB:g} RMB；优惠券占比 = 优惠券花费RMB / 商品销售额RMB",
             },
             {
                 "module": "商品与品类销量补充",
