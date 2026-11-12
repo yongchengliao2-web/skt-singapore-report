@@ -3470,6 +3470,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     tbody tr:nth-child(even) td {
       background: rgba(238, 245, 242, 0.42);
     }
+    .table-summary td {
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      background: #eff6ff;
+      border-bottom: 0;
+      box-shadow: inset 0 2px #93c5fd;
+      font-weight: 850;
+    }
     .category-detail-table th:first-child,
     .category-detail-table td:first-child {
       width: 42px;
@@ -5902,6 +5911,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <td>${tableMetricHtml(row.voucher_ratio, previous.voucher_ratio, ratio, { inverse: true })}</td>
       `;
     }
+    function categoryTableTotal(rows) {
+      const total = {};
+      GROUP_METRIC_FIELDS.forEach(field => { total[field] = sum(rows || [], field); });
+      addCategoryDerived(total);
+      total.sales_share = sum(rows || [], 'sales_share');
+      return total;
+    }
+    function categoryTableFooter(rows, compareRows) {
+      return `<tfoot class="table-summary"><tr><td></td><td>汇总</td>${groupMetricCells(categoryTableTotal(rows), categoryTableTotal(compareRows))}</tr></tfoot>`;
+    }
     function renderGroupTable(groupRows, compareGroupRows, categoryRows, compareCategoryRows) {
       const rows = (groupRows || []).slice(0, 40);
       if (!rows.length) {
@@ -5954,6 +5973,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </table>
       `;
       setupGroupRowToggles();
+      byId('groupTable').querySelector('table').insertAdjacentHTML('beforeend', categoryTableFooter(groupRows, compareGroupRows));
     }
     const GROUP_EXPANDED_ROWS_KEY = 'sktGroupExpandedRows';
     function setupGroupRowToggles() {
@@ -6082,6 +6102,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         </table>
       `;
       setupCategoryRowToggles();
+      byId('categoryTable').querySelector('table').insertAdjacentHTML('beforeend', categoryTableFooter(categoryRows, compareCategoryRows));
     }
     function renderOffsiteProductTable(offsiteProductRows, compareOffsiteProductRows) {
       const rows = offsiteProductRows || [];
@@ -6325,6 +6346,33 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); choose(); } };
       });
     }
+    function productTableTotal(rows) {
+      const total = {};
+      ['paid_sales_rmb', 'paid_units', 'visitors', 'page_views', 'add_to_cart_visitors',
+       'product_clicks', 'product_impressions', 'full_site_cost_rmb', 'voucher_spend_rmb', 'gmv_share']
+        .forEach(field => { total[field] = sum(rows || [], field); });
+      total.full_site_roi = total.full_site_cost_rmb ? total.paid_sales_rmb / total.full_site_cost_rmb : null;
+      total.add_to_cart_rate = total.visitors ? total.add_to_cart_visitors / total.visitors : null;
+      total.unit_conversion_rate = total.visitors ? total.paid_units / total.visitors : null;
+      total.ctr = total.product_impressions ? total.product_clicks / total.product_impressions : null;
+      total.sales_per_visitor = total.visitors ? total.paid_sales_rmb / total.visitors : null;
+      total.voucher_ratio = total.paid_sales_rmb ? total.voucher_spend_rmb / total.paid_sales_rmb : null;
+      return total;
+    }
+    function productTableFooter(rows, compareRows) {
+      const total = productTableTotal(rows);
+      const previous = productTableTotal(compareRows);
+      const columns = [
+        ['paid_sales_rmb', money], ['gmv_share', ratio, { neutral: true }],
+        ['full_site_cost_rmb', money, { neutral: true }], ['full_site_roi', roas, { absoluteDelta: true }],
+        ['paid_units', value => fmt0.format(n(value))], ['visitors', value => fmt0.format(n(value))],
+        ['page_views', value => fmt0.format(n(value))], ['add_to_cart_visitors', value => fmt0.format(n(value))],
+        ['add_to_cart_rate', ratio], ['unit_conversion_rate', ratio], ['ctr', ratio], ['sales_per_visitor', money],
+        ['voucher_spend_rmb', money, { neutral: true }], ['voucher_ratio', ratio, { inverse: true }],
+      ];
+      return `<tfoot class="table-summary"><tr><td>汇总</td><td></td>${columns.map(([field, format, options]) =>
+        `<td>${tableMetricHtml(total[field], previous[field], format, options)}</td>`).join('')}</tr></tfoot>`;
+    }
     function renderProductTable(productRows, compareProductRows) {
       const rows = productRows.slice(0, 40);
       if (!rows.length) {
@@ -6366,6 +6414,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           </tbody>
         </table>
       `;
+      byId('productTable').querySelector('table').insertAdjacentHTML('beforeend', productTableFooter(productRows, compareProductRows));
     }
     function renderDailyTable(rows) {
       const latest = [...rows].reverse().slice(0, 20);
@@ -6975,6 +7024,9 @@ def validate_report_html(html: str) -> None:
         "function setupCategoryRowToggles",
         "renderCategoryTable(categoryRows, compareCategoryRows, productRows, compareProductRows)",
         'id="groupTable"',
+        'class="table-summary"',
+        'function categoryTableFooter',
+        'function productTableFooter',
         "function aggregateGroupRows",
         "优惠券花费",
         "优惠券占比",
