@@ -120,7 +120,7 @@ source_tabs:
     offsite_onsite_product_override_field: U
     rule: Use 品类表 as the source of truth for SKU/Item/category mapping, SP SGD-to-RMB exchange rate, and the offsite advertised-product catalog in column T. Column R may explicitly map the row SKU to an onsite product name or Item ID; column U may explicitly map the row T offsite product to an onsite product name or Item ID. Match each column-T product to at most one onsite product; onsite products with data that remain unmatched are marked 未投放产品.
     mapping_priority:
-      - Exact Item ID match from 新映射.
+      - Exact Item ID match from SKT映射.
       - Exact Item ID match from 品类表.
       - Exact SKU match.
       - Exact item/product name match.
@@ -128,14 +128,15 @@ source_tabs:
       - Unmapped onsite ads fall back to 泛店铺/无产品; other rows fall back to 长尾品.
 
   new_mapping:
-    sheet: 新映射
-    gid: 1410457373
+    sheet: SKT映射
+    spreadsheet_id: 1tK3BhFPuL7ObX5xE5-ehqtr64XCF8IjeEqdMJgvE2c8
+    gid: 948443347
     group_field: 分组
     group_category_field: 品类 (first occurrence)
     item_id_field: Item ID
     product_field: 产品
     item_category_field: 品类 (second occurrence)
-    rule: Use the named fields rather than fixed column positions. Fill down blank 分组 and group-level 品类 cells. New mapping takes priority for Item ID, product, category, and group relationships; use 品类表 only for Item IDs absent from 新映射.
+    rule: Use the named fields rather than fixed column positions. Fill down blank 分组 and group-level 品类 cells. SKT映射 takes priority for Item ID, product, category, and group relationships; use 品类表 only for Item IDs absent from SKT映射.
 
   onsite_voucher_cost:
     source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_cost_by_item

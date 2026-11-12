@@ -105,9 +105,10 @@ SOURCES: dict[str, dict[str, Any]] = {
         "fallbacks": ["品类表.csv"],
     },
     "new_mapping": {
-        "sheet": "新映射",
-        "gid": "1410457373",
-        "filename": "new_mapping.csv",
+        "sheet": "SKT映射",
+        "spreadsheet_id": "1tK3BhFPuL7ObX5xE5-ehqtr64XCF8IjeEqdMJgvE2c8",
+        "gid": "948443347",
+        "filename": "skt_mapping.csv",
         "fallbacks": [],
     },
 }
@@ -151,14 +152,15 @@ def _download_sheet(sheet_name: str, destination: Path) -> None:
     cachebust = int(datetime.now().timestamp())
     config = next((item for item in SOURCES.values() if item["sheet"] == sheet_name), {})
     gid = config.get("gid")
+    spreadsheet_id = config.get("spreadsheet_id", SPREADSHEET_ID)
     if gid is not None:
         url = (
-            f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?"
+            f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?"
             f"format=csv&gid={quote(str(gid))}&cachebust={cachebust}"
         )
     else:
         url = (
-            f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?"
+            f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/gviz/tq?"
             f"tqx=out:csv&sheet={quote(sheet_name)}&cachebust={cachebust}"
         )
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -491,7 +493,7 @@ def load_new_mapping(path: Path | None) -> dict[str, Any]:
     item_indexes = header_indices(headers, "Item ID")
     product_indexes = header_indices(headers, "产品")
     if not group_indexes or len(category_indexes) < 2 or not item_indexes or not product_indexes:
-        raise ValueError("新映射缺少分组、重复品类、Item ID 或产品字段")
+        raise ValueError("SKT映射缺少分组、重复品类、Item ID 或产品字段")
 
     group_index = group_indexes[0]
     group_category_index = category_indexes[0]
@@ -2617,7 +2619,7 @@ def enrich_payload_with_vouchers(
         "product_reconciliation_sgd": round(assigned_product_sgd, 6),
         "category_reconciliation_sgd": round(assigned_category_sgd, 6),
         "group_totals_sgd": {group: round(value, 6) for group, value in sorted(voucher_by_group.items())},
-        "category_mapping": "新映射 > 品类表",
+        "category_mapping": "SKT映射 > 品类表",
     }
     payload["voucher_audit"] = audit
     return audit
@@ -2672,6 +2674,7 @@ def build_payload() -> dict[str, Any]:
         "market": "Singapore",
         "report_contract_version": REPORT_CONTRACT_VERSION,
         "spreadsheet_url": f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit?usp=sharing",
+        "mapping_spreadsheet_url": f"https://docs.google.com/spreadsheets/d/{SOURCES['new_mapping']['spreadsheet_id']}/edit?gid={SOURCES['new_mapping']['gid']}",
         "summary": build_summary(daily_rows, fx_rate),
         "daily_rows": daily_rows,
         "store_rows": [
@@ -2766,11 +2769,11 @@ def build_payload() -> dict[str, Any]:
                 "sheet": "品类表",
                 "date": "无",
                 "metric": "Item ID / 单品 / SKU / 产品名 / 品类 / 汇率 / T列站外投放产品 / R-U列人工映射",
-                "normalization": "作为新映射未命中 Item ID 的兜底；同时用于 SP 汇率、站外产品清单及 R-U 人工映射",
+                "normalization": "作为SKT映射未命中 Item ID 的兜底；同时用于 SP 汇率、站外产品清单及 R-U 人工映射",
             },
             {
-                "module": "新映射与分组",
-                "sheet": "新映射",
+                "module": "SKT映射与分组",
+                "sheet": "SKT映射",
                 "date": "无",
                 "metric": "分组 / 品类 / Item ID / 产品 / 品类",
                 "normalization": "按字段名读取并填充空白分组；Item ID、产品、品类和分组优先于品类表",
@@ -2787,7 +2790,7 @@ def build_payload() -> dict[str, Any]:
                 "sheet": "DMS / SP-销量 + TT-销量",
                 "date": "recordDate",
                 "metric": "sku / skuName / dailyDatas.count",
-                "normalization": "仅用于商品与品类明细拆分，不覆盖总览 BQ 销量；DMS日SKU销量按新映射 > 品类表匹配，未命中归入长尾品",
+                "normalization": "仅用于商品与品类明细拆分，不覆盖总览 BQ 销量；DMS日SKU销量按SKT映射 > 品类表匹配，未命中归入长尾品",
             },
         ],
     }
@@ -2798,7 +2801,7 @@ def build_payload() -> dict[str, Any]:
     payload["summary"].setdefault("freshness", {})["platform_sales_bq"] = bq_platform_audit["date_end"]
     payload["summary"].setdefault("freshness", {})["voucher"] = voucher_audit["date_end"]
     payload["assumptions"] = {
-        "category_mapping": "新映射 > 品类表",
+        "category_mapping": "SKT映射 > 品类表",
         "new_mapping_rows": category_ref["new_mapping_source_rows"],
         "new_mapping_item_count": category_ref["new_mapping_item_count"],
         "voucher_audit": voucher_audit,
@@ -4317,7 +4320,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="section-head">
         <div>
           <h2>分组明细</h2>
-          <p class="section-note">按新映射中的分组与品类关系汇总；点击分组左侧箭头可展开查看该分组下的品类，字段与品类明细保持一致。</p>
+          <p class="section-note">按SKT映射中的分组与品类关系汇总；点击分组左侧箭头可展开查看该分组下的品类，字段与品类明细保持一致。</p>
         </div>
       </div>
       <div class="table-wrap" id="groupTable"></div>
