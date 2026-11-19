@@ -139,19 +139,19 @@ source_tabs:
     rule: Use the named fields rather than fixed column positions. Fill down blank 分组 and group-level 品类 cells. SKT映射 takes priority for Item ID, product, category, and group relationships; use 品类表 only for Item IDs absent from SKT映射.
 
   onsite_voucher_cost:
-    source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_cost_by_item
-    calculation_method: direct_item_seller_cost_v1
+    source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_id_cost
+    allocation_source_table: advance-rush-406115.dim_shopee_ads_performance.sg_skt_onsite_voucher_cost_by_item
+    calculation_method: voucher_id_daily_allocated_v1
     brand_code: SKT
     date_field: period_start
-    item_id_field: item_id
-    seller_voucher_cost_field: seller_voucher_cost_sgd
+    seller_voucher_cost_field: seller_voucher_cost
     estimation_factor: 0.55
-    metric_field: seller_voucher_cost_sgd * 0.55
+    metric_field: ROUND(SUM(seller_voucher_cost) * 0.55, 2) per day
     cache: cache/skt_voucher_item_daily.json
     currency: SGD
     display_currency: RMB
     exchange_rate: 5.2
-    rule: Keep latest business_key by loaded_at and payload_hash. For each day and Item ID use SUM(seller_voucher_cost_sgd) * 0.55, then convert at 5.2 RMB per SGD. Category, group and site totals sum these item costs exactly once. Never allocate using net voucher weights or rescale to voucher ID totals. Missing product mapping goes to 长尾品. Retain source precision until display rounding.
+    rule: Deduplicate voucher IDs by business_key using latest loaded_at and payload_hash. Voucher-ID daily totals are authoritative, matching the budget dashboard. Allocate each daily total by nonnegative item seller_voucher_cost_sgd weights; retain six decimals and assign rounding remainder to the final item. Missing weights go to item 0 / 长尾品. Product amounts are allocated estimates, not directly observed item costs. Category, group and site totals sum allocated amounts exactly once.
 
   platform_unit_supplements:
     primary_source: DMS SKU detail

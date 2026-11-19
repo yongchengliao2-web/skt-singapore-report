@@ -35,7 +35,7 @@ BQ_PLATFORM_CACHE_PATH = CACHE_DIR / "skt_bq_platform_daily.json"
 DMS_COMMERCE_CACHE_PATH = ROOT / "data" / "dms" / "skt_dms_commerce_latest.json"
 VOUCHER_SOURCE_TABLE = (
     "advance-rush-406115.dim_shopee_ads_performance."
-    "sg_skt_onsite_voucher_cost_by_item"
+    "sg_skt_onsite_voucher_id_cost"
 )
 BQ_PLATFORM_SOURCE_TABLE = (
     "advance-rush-406115.dim_shopee_ads_performance."
@@ -2413,7 +2413,7 @@ def load_voucher_rows(path: Path, category_ref: dict[str, Any]) -> tuple[list[di
         raise ValueError("优惠券缓存来源不在 SKT 白名单")
     if metadata.get("estimation_factor") != 0.55 or metadata.get("fx_rate") != VOUCHER_SGD_TO_RMB:
         raise ValueError("优惠券缓存尚未切换到规划预算口径，请重新取数")
-    if metadata.get("calculation_method") != "direct_item_seller_cost_v1":
+    if metadata.get("calculation_method") != "voucher_id_daily_allocated_v1":
         raise ValueError("优惠券缓存仍为旧分摊逻辑，请重新取数")
     if not isinstance(source_rows, list) or not source_rows:
         raise ValueError("优惠券缓存为空")
@@ -2446,7 +2446,7 @@ def load_voucher_rows(path: Path, category_ref: dict[str, Any]) -> tuple[list[di
             {
                 "date": day,
                 "item_id": item_id,
-                "product": product or item_id,
+                "product": product or ("优惠券未分配" if item_id == "0" else item_id),
                 "category": category,
                 "voucher_spend_sgd": spend_sgd,
                 "voucher_spend_rmb": spend_sgd * VOUCHER_SGD_TO_RMB,
@@ -2786,10 +2786,10 @@ def build_payload() -> dict[str, Any]:
             },
             {
                 "module": "优惠券",
-                "sheet": "BigQuery sg_skt_onsite_voucher_cost_by_item",
+                "sheet": "BigQuery sg_skt_onsite_voucher_id_cost",
                 "date": "period_start",
                 "metric": "seller_voucher_cost × 0.55",
-                "normalization": f"商品商家优惠券承担 × 0.55，品类、分组及全站均累加商品成本，不作净券权重分摊。1 SGD = {VOUCHER_SGD_TO_RMB:g} RMB；优惠券占比 = 优惠券花费RMB / 商品销售额RMB",
+                "normalization": f"优惠券 ID 商家承担按日汇总 × 0.55，保留 SGD 两位小数；商品按当日商家券成本占比分摊，品类及分组累加分摊额。无商品权重的金额归长尾品。1 SGD = {VOUCHER_SGD_TO_RMB:g} RMB；优惠券占比 = 优惠券花费RMB / 商品销售额RMB",
             },
             {
                 "module": "商品与品类销量补充",
@@ -2811,7 +2811,7 @@ def build_payload() -> dict[str, Any]:
         "new_mapping_rows": category_ref["new_mapping_source_rows"],
         "new_mapping_item_count": category_ref["new_mapping_item_count"],
         "voucher_audit": voucher_audit,
-        "voucher_definition": "seller_voucher_cost - shopee_voucher_cost_on_same_order_item",
+        "voucher_definition": "voucher-ID daily seller_voucher_cost * 0.55; item amounts are allocated estimates",
         "voucher_ratio": "voucher_spend_rmb / product_paid_sales_rmb",
         "voucher_sgd_to_rmb": VOUCHER_SGD_TO_RMB,
     }
