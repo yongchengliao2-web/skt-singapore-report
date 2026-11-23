@@ -2864,6 +2864,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       gap: 14px;
       min-width: 0;
     }
+    .shell > * {
+      min-width: 0;
+      max-width: 100%;
+    }
     .hero {
       display: grid;
       place-items: center;
@@ -2886,7 +2890,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .hero h1 {
       margin: 0;
-      font-size: clamp(34px, 3.4vw, 52px);
+      font-size: 40px;
       line-height: 1.08;
       font-weight: 950;
       letter-spacing: 0;
@@ -3853,16 +3857,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     @media (min-width: 1700px) {
       .page,
       .topbar-inner {
-        --report-rail-width: 176px;
-        --report-balanced-width: min(1580px, calc(100vw - 272px));
-        width: var(--report-balanced-width);
-        margin-left: calc((100vw - var(--report-rail-width) - var(--report-balanced-width)) / 2);
-        margin-right: auto;
+        width: calc(100% - 224px);
+        margin-left: 24px;
+        margin-right: 200px;
       }
       body.side-nav-collapsed .page,
       body.side-nav-collapsed .topbar-inner {
-        --report-rail-width: 60px;
-        --report-balanced-width: min(1580px, calc(100vw - 156px));
+        width: calc(100% - 108px);
+        margin-right: 84px;
       }
     }
     @media (min-width: 1181px) and (max-width: 1699px) {
@@ -4060,11 +4062,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .filter-actions { justify-content: flex-start; }
     }
+    #narrative,
+    .analysis-grid {
+      width: 100%;
+      margin-left: 0;
+      margin-right: 0;
+    }
+    .section,
+    .table-wrap,
+    .chart {
+      min-width: 0;
+      max-width: 100%;
+    }
+    @media (min-width: 1181px) and (max-width: 1450px) {
+      .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .filter-actions { flex-wrap: wrap; }
+    }
     @media (max-width: 760px) {
       .page, .topbar-inner { width: min(100% - 24px, 1580px); }
       .page { padding: 14px 0 32px; }
       .topbar-inner { align-items: flex-start; flex-direction: column; }
       .hero { min-height: 0; padding: 18px; }
+      .hero h1 { font-size: 28px; }
       .hero p { font-size: 14px; }
       .hero-status-card {
         grid-template-columns: 1fr;
