@@ -2855,7 +2855,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     a { color: inherit; }
     .page {
-      width: min(1580px, calc(100vw - 96px));
+      width: calc(100% - 24px);
       margin: 0 auto;
       padding: 18px 0 48px;
     }
@@ -2934,7 +2934,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       backdrop-filter: blur(14px);
     }
     .topbar-inner {
-      width: min(1580px, calc(100vw - 96px));
+      width: calc(100% - 24px);
       margin: 0 auto;
       display: flex;
       align-items: center;
@@ -3774,7 +3774,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     .side-nav {
       position: fixed;
       top: 128px;
-      right: 18px;
+      right: 6px;
       z-index: 20;
       width: 158px;
       padding: 10px;
@@ -3857,14 +3857,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     @media (min-width: 1700px) {
       .page,
       .topbar-inner {
-        width: calc(100% - 224px);
-        margin-left: 24px;
-        margin-right: 200px;
+        width: calc(100% - 182px);
+        margin-left: 12px;
+        margin-right: 170px;
       }
       body.side-nav-collapsed .page,
       body.side-nav-collapsed .topbar-inner {
-        width: calc(100% - 108px);
-        margin-right: 84px;
+        width: calc(100% - 24px);
+        margin-right: 12px;
       }
     }
     @media (min-width: 1181px) and (max-width: 1699px) {
@@ -4049,7 +4049,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       text-align: right;
     }
     @media (max-width: 1180px) {
-      .page, .topbar-inner { width: min(100% - 48px, 1580px); }
+      .page, .topbar-inner { width: calc(100% - 24px); }
       .side-nav { display: none; }
       .hero { grid-template-columns: 1fr; }
       .hero-status-card { justify-content: start; width: 100%; }
@@ -4080,7 +4080,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       .filter-actions { flex-wrap: wrap; }
     }
     @media (max-width: 760px) {
-      .page, .topbar-inner { width: min(100% - 24px, 1580px); }
+      .page, .topbar-inner { width: calc(100% - 16px); }
       .page { padding: 14px 0 32px; }
       .topbar-inner { align-items: flex-start; flex-direction: column; }
       .hero { min-height: 0; padding: 18px; }
