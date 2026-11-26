@@ -2855,7 +2855,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     a { color: inherit; }
     .page {
-      width: 87.5%;
+      width: 84%;
       margin: 0 auto;
       padding: 18px 0 48px;
     }
@@ -2934,7 +2934,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       backdrop-filter: blur(14px);
     }
     .topbar-inner {
-      width: 87.5%;
+      width: 84%;
       margin: 0 auto;
       display: flex;
       align-items: center;
@@ -3857,13 +3857,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     @media (min-width: 1700px) {
       .page,
       .topbar-inner {
-        width: 87.5%;
+        width: 84%;
         margin-left: auto;
         margin-right: auto;
       }
       body.side-nav-collapsed .page,
       body.side-nav-collapsed .topbar-inner {
-        width: 87.5%;
+        width: 84%;
         margin-right: auto;
       }
     }
@@ -4049,7 +4049,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       text-align: right;
     }
     @media (max-width: 1180px) {
-      .page, .topbar-inner { width: 87.5%; }
+      .page, .topbar-inner { width: 84%; }
       .side-nav { display: none; }
       .hero { grid-template-columns: 1fr; }
       .hero-status-card { justify-content: start; width: 100%; }
@@ -4080,7 +4080,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       .filter-actions { flex-wrap: wrap; }
     }
     @media (max-width: 760px) {
-      .page, .topbar-inner { width: 87.5%; }
+      .page, .topbar-inner { width: 84%; }
       .page { padding: 14px 0 32px; }
       .topbar-inner { align-items: flex-start; flex-direction: column; }
       .hero { min-height: 0; padding: 18px; }
@@ -6640,19 +6640,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         toggle.setAttribute('aria-label', collapsed ? '展开导航' : '收起导航');
         toggle.title = collapsed ? '展开导航' : '收起导航';
       };
-      let saved = false;
-      try {
-        saved = localStorage.getItem('sktSideNavCollapsed') === '1';
-      } catch (error) {
-        saved = false;
-      }
-      setCollapsed(saved);
+      setCollapsed(false);
       toggle.addEventListener('click', () => {
         const collapsed = !nav.classList.contains('is-collapsed');
         setCollapsed(collapsed);
-        try {
-          localStorage.setItem('sktSideNavCollapsed', collapsed ? '1' : '0');
-        } catch (error) {}
       });
     }
     const CATEGORY_EXPANDED_ROWS_KEY = 'sktCategoryExpandedRows';
